@@ -5,14 +5,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/operaodev/cardex/internal/cards"
+	"github.com/operaodev/cardex/internal/search"
+	searchproviders "github.com/operaodev/cardex/internal/search/providers"
 )
 
 func main() {
-	// 1. Conectar a PostgreSQL (COMENTADO POR AHORA PORQUE NO HAY DB)
 	// database.Connect()
-
-	// 2. Inyección de dependencias (USAMOS EL MOCK EN LUGAR DEL REAL)
-	// Creamos un par de cartas falsas para probar
+	
 	mockCards := []cards.Card{
 		{
 			ID:          "YGO-123-SP",
@@ -46,23 +45,26 @@ func main() {
 		},
 	}
 
-	repo := cards.NewMockRepository(mockCards) // <-- Inyectamos el Mock!
+	repo := cards.NewMockRepository(mockCards)
 	service := cards.NewService(repo)
 	handler := cards.NewHandler(service)
 
-	// 3. Iniciar el motor de Gin
+	ygoProv := searchproviders.NewYGOPROProvider()
+	searchSvc := search.NewService(ygoProv)
+	searchHandler := search.NewHandler(searchSvc)
+
 	r := gin.Default()
 
-	// 4. Configurar Rutas
 	cardsGroup := r.Group("/cards")
 	{
 		// /cards/search?name=Kuriboh
 		cardsGroup.GET("/search", handler.GetByNameHandler)
 		// /cards/scg-1234
 		cardsGroup.GET("/:id", handler.GetByIDHandler)
+		// /cards/provider/ygopro/Kuriboh
+		cardsGroup.GET("/provider/:provider/:name", searchHandler.GetFromProvider)
 	}
 
-	// 5. Iniciar el servidor
 	log.Println("Servidor iniciado en http://localhost:8080")
 	if err := r.Run(":8080"); err != nil {
 		log.Fatalf("Error al iniciar el servidor: %v", err)

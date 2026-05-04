@@ -13,9 +13,9 @@ var DB *gorm.DB
 func Connect() {
 	// DSN (Data Source Name): Reemplaza con tus credenciales de Postgres
 	dns := `
-	host=[IP_ADDRESS]
-	user=root
-	password=root
+	host=localhost
+	user=operao
+	password=0p3r40321
 	dbname=cardex
 	port=5432
 	sslmode=disable
