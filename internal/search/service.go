@@ -7,38 +7,53 @@ import (
 )
 
 type Service struct {
-	ygo TCGProvider[YGOPROCard, string]
+	ygo TCGProvider
 }
 
-func NewService(ygo TCGProvider[YGOPROCard, string]) *Service {
+func NewService(ygo TCGProvider) *Service {
 	return &Service{
 		ygo: ygo,
 	}
 }
 
+// SearchByProvider fetches cards from the given provider and flattens the
+// multilingual TCGResult into a slice of cards.Card for the HTTP response.
 func (s *Service) SearchByProvider(providerName, query string) ([]cards.Card, error) {
 	switch providerName {
-	case "ygopro":
-		return executeSearch(s.ygo, query)
+	case "ygo":
+		result, err := s.ygo.FetchCards(query)
+		if err != nil {
+			return nil, fmt.Errorf("error obteniendo cartas: %w", err)
+		}
+		return flattenTCGResult(result), nil
 	default:
 		return nil, fmt.Errorf("proveedor no soportado: %s", providerName)
 	}
 }
 
-// Función auxiliar genérica que maneja la lógica repetitiva para cualquier TCGProvider
-func executeSearch[T any](p searchproviders.TCGProvider[T, string], query string) ([]cards.Card, error) {
-	rawCards, err := p.FetchCards(query)
-	if err != nil {
-		return nil, fmt.Errorf("error obteniendo cartas: %w", err)
-	}
-
-	var results []cards.Card
-	for _, raw := range rawCards {
-		card, err := p.ConvertToCard(raw)
+// SearchByID fetches a single card by its provider ID and returns all
+// localised versions as a flat slice.
+func (s *Service) SearchByID(providerName, id string) ([]cards.Card, error) {
+	switch providerName {
+	case "ygo":
+		result, err := s.ygo.FetchCardByID(id)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("error obteniendo carta: %w", err)
 		}
-		results = append(results, card)
+		return flattenTCGResult(result), nil
+	default:
+		return nil, fmt.Errorf("proveedor no soportado: %s", providerName)
 	}
-	return results, nil
+}
+
+// flattenTCGResult converts the nested map[sharedID]map[LangCode]Card into
+// a flat []cards.Card for easy JSON serialisation.
+func flattenTCGResult(result TCGResult) []cards.Card {
+	var out []cards.Card
+	for _, byLang := range result.Cards {
+		for _, card := range byLang {
+			out = append(out, card)
+		}
+	}
+	return out
 }

@@ -6,17 +6,18 @@ type LangCode string
 type LangName string
 
 const (
-	EN LangCode = "EN" // English
-	FR LangCode = "FR" // French
-	DE LangCode = "DE" // German
-	IT LangCode = "IT" // Italian
-	PT LangCode = "PT" // Portuguese
-	SP LangCode = "SP" // Spanish
+	EN LangCode = "en" // English
+	FR LangCode = "fr" // French
+	DE LangCode = "de" // German
+	IT LangCode = "it" // Italian
+	PT LangCode = "pt" // Portuguese
+	SP LangCode = "sp" // Spanish
 
-	JP LangCode = "JP" // Japanese
-	AE LangCode = "AE" // Asian-English
-	KR LangCode = "KR" // Korean
-	SC LangCode = "SC" // Simplified Chinese
+	JP LangCode = "jp" // Japanese
+	AE LangCode = "ae" // Asian-English
+	KR LangCode = "kr" // Korean
+	TC LangCode = "tc" // Traditional Chinese
+	SC LangCode = "sc" // Simplified Chinese
 )
 
 const (
@@ -27,10 +28,11 @@ const (
 	Portuguese LangName = "Português"
 	Spanish    LangName = "Español"
 
-	Japanese          LangName = "日本語"
-	AsianEnglish      LangName = "English (Asia)"
-	Korean            LangName = "한국어"
-	SimplifiedChinese LangName = "简体中文"
+	Japanese           LangName = "日本語"
+	AsianEnglish       LangName = "English (Asia)"
+	Korean             LangName = "한국어"
+	TraditionalChinese LangName = "繁體中文"
+	SimplifiedChinese  LangName = "简体中文"
 )
 
 func GetLangName(code LangCode) (LangName, error) {
@@ -53,6 +55,8 @@ func GetLangName(code LangCode) (LangName, error) {
 		return AsianEnglish, nil
 	case KR:
 		return Korean, nil
+	case TC:
+		return TraditionalChinese, nil
 	case SC:
 		return SimplifiedChinese, nil
 	default:

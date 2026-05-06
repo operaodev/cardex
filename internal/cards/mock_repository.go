@@ -36,7 +36,7 @@ func (m *mockRepository) GetByName(name string) ([]Card, error) {
 	return results, nil
 }
 
-// Create es un mock vacío para cumplir con la interfaz Repository
-func (m *mockRepository) Create(info *CardInfo) error {
+// Create es un mock vacío para cumplir con la interfaz Repository.
+func (m *mockRepository) Create(card *Card) error {
 	return nil
 }

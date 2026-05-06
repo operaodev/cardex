@@ -49,7 +49,7 @@ func main() {
 	service := cards.NewService(repo)
 	handler := cards.NewHandler(service)
 
-	ygoProv := searchproviders.NewYGOPROProvider()
+	ygoProv := searchproviders.NewYGOProvider()
 	searchSvc := search.NewService(ygoProv)
 	searchHandler := search.NewHandler(searchSvc)
 
@@ -61,8 +61,8 @@ func main() {
 		cardsGroup.GET("/search", handler.GetByNameHandler)
 		// /cards/scg-1234
 		cardsGroup.GET("/:id", handler.GetByIDHandler)
-		// /cards/provider/ygopro/Kuriboh
-		cardsGroup.GET("/provider/:provider/:name", searchHandler.GetFromProvider)
+		// /cards/search/provider/ygo/id/1234
+		cardsGroup.GET("/provider/:provider/:id", searchHandler.GetFromProvider)
 	}
 
 	log.Println("Servidor iniciado en http://localhost:8080")

@@ -26,7 +26,7 @@ func setupTestRouter(handler *Handler) *gin.Engine {
 func TestGetByIDHandler(t *testing.T) {
 	// 1. Arrange (Preparar datos)
 	mockCards := []Card{
-		{ID: "scg-123-es", Name: "Mago Oscuro", Lang: "es"},
+		{ID: "YGO-SP-12345", SharedID: "YGO-12345", Name: "Mago Oscuro", Lang: SP, Language: Spanish},
 	}
 	mockRepo := NewMockRepository(mockCards)
 	svc := NewService(mockRepo)
@@ -35,7 +35,7 @@ func TestGetByIDHandler(t *testing.T) {
 
 	// Crear una petición HTTP falsa
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/cards/scg-123-es", nil)
+	req, _ := http.NewRequest("GET", "/cards/YGO-SP-12345", nil)
 
 	// 2. Act (Ejecutar)
 	router.ServeHTTP(w, req)
@@ -59,8 +59,8 @@ func TestGetByIDHandler(t *testing.T) {
 func TestGetByNameHandler(t *testing.T) {
 	// 1. Arrange
 	mockCards := []Card{
-		{ID: "scg-123-en", Name: "Dark Magician", Lang: "en"},
-		{ID: "lob-001-en", Name: "Dark Magician", Lang: "en"},
+		{ID: "YGO-EN-12345", SharedID: "YGO-12345", Name: "Dark Magician", Lang: EN, Language: English},
+		{ID: "YGO-EN-12346", SharedID: "YGO-12346", Name: "Dark Magician", Lang: EN, Language: English},
 	}
 	mockRepo := NewMockRepository(mockCards)
 	svc := NewService(mockRepo)

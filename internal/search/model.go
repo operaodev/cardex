@@ -1,15 +1,12 @@
 package search
 
-type CardResult struct {
-	ID          int
-	Name        string
-	Description string
-	Types       string
-	Archetype   string
-	Source      string
-	Images      []string
+import "github.com/operaodev/cardex/internal/cards"
+
+type TCGResult struct {
+	Cards map[string]map[cards.LangCode]cards.Card
 }
 
-type TCGProvider[T any, K any] interface {
-	FetchCards(key K) ([]T, error)
+type TCGProvider interface {
+	FetchCardByID(id string) (TCGResult, error)
+	FetchCards(query string) (TCGResult, error)
 }
