@@ -6,7 +6,7 @@ import "gorm.io/gorm"
 // Ahora las firmas son mucho más limpias gracias al diseño relacional.
 type Repository interface {
 	Create(card *Card) error
-	GetByID(id string) (*Card, error)
+	GetByID(id uint64) (*Card, error)
 	GetByName(name string) ([]Card, error)
 }
 
@@ -27,9 +27,9 @@ func (r *repository) Create(card *Card) error {
 	return r.db.Create(card).Error
 }
 
-// GetByID busca una carta por su ID exacto (ej. "YGO-EN-12345").
+// GetByID busca una carta por su ID exacto (ej. 1).
 // Al ser tabla única no se necesita ningún join ni preload.
-func (r *repository) GetByID(id string) (*Card, error) {
+func (r *repository) GetByID(id uint64) (*Card, error) {
 	var card Card
 
 	result := r.db.Where(&Card{ID: id}).First(&card)

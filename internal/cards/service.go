@@ -5,7 +5,7 @@ import "fmt"
 // Service define el contrato de lo que nuestra aplicación puede hacer
 // con las cartas.
 type Service interface {
-	GetByID(id string) (*Card, error)
+	GetByID(id uint64) (*Card, error)
 	GetByName(name string) ([]Card, error)
 }
 
@@ -22,8 +22,8 @@ func NewService(repo Repository) Service {
 }
 
 // GetByID obtiene una carta por su ID delegando al repositorio.
-func (s *service) GetByID(id string) (*Card, error) {
-	if id == "" {
+func (s *service) GetByID(id uint64) (*Card, error) {
+	if id == 0 {
 		return nil, fmt.Errorf("el ID no puede estar vacío")
 	}
 	return s.repo.GetByID(id)

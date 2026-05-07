@@ -26,7 +26,7 @@ func setupTestRouter(handler *Handler) *gin.Engine {
 func TestGetByIDHandler(t *testing.T) {
 	// 1. Arrange (Preparar datos)
 	mockCards := []Card{
-		{ID: "YGO-SP-12345", SharedID: "YGO-12345", Name: "Mago Oscuro", Lang: SP, Language: Spanish},
+		{ID: 12345, Names: map[LangCode]string{"en": "Dark Magician"}},
 	}
 	mockRepo := NewMockRepository(mockCards)
 	svc := NewService(mockRepo)
@@ -35,7 +35,7 @@ func TestGetByIDHandler(t *testing.T) {
 
 	// Crear una petición HTTP falsa
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/cards/YGO-SP-12345", nil)
+	req, _ := http.NewRequest("GET", "/cards/12345", nil)
 
 	// 2. Act (Ejecutar)
 	router.ServeHTTP(w, req)
@@ -51,16 +51,16 @@ func TestGetByIDHandler(t *testing.T) {
 		t.Fatalf("Fallo al parsear el JSON de respuesta: %v", err)
 	}
 
-	if response.Name != "Mago Oscuro" {
-		t.Errorf("Se esperaba nombre 'Mago Oscuro', se obtuvo '%s'", response.Name)
+	if response.Names["en"] != "Dark Magician" {
+		t.Errorf("Se esperaba nombre 'Dark Magician', se obtuvo '%s'", response.Names["en"])
 	}
 }
 
 func TestGetByNameHandler(t *testing.T) {
 	// 1. Arrange
 	mockCards := []Card{
-		{ID: "YGO-EN-12345", SharedID: "YGO-12345", Name: "Dark Magician", Lang: EN, Language: English},
-		{ID: "YGO-EN-12346", SharedID: "YGO-12346", Name: "Dark Magician", Lang: EN, Language: English},
+		{ID: 1, Names: map[LangCode]string{"en": "Dark Magician"}},
+		{ID: 2, Names: map[LangCode]string{"en": "Dark Magician"}},
 	}
 	mockRepo := NewMockRepository(mockCards)
 	svc := NewService(mockRepo)

@@ -2,6 +2,7 @@ package cards
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,13 +23,20 @@ func NewHandler(s Service) *Handler {
 // Espera una ruta configurada en Gin como: r.GET("/cards/:id", handler.GetByIDHandler)
 func (h *Handler) GetByIDHandler(c *gin.Context) {
 	// Gin extrae los parámetros de la ruta de forma nativa
-	id := c.Param("id")
-
-	if id == "" {
+	idStr := c.Param("id")
+	if idStr == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Debe proporcionar el ID de la carta"})
 		return
 	}
 
+	var id uint64
+	
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID inválido"})
+		return
+	}
+	
 	// Llamamos a nuestra capa de negocio (Service)
 	card, err := h.service.GetByID(id)
 	if err != nil {

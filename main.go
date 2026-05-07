@@ -11,37 +11,32 @@ import (
 
 func main() {
 	// database.Connect()
-	
+
 	mockCards := []cards.Card{
 		{
-			ID:          "YGO-123-SP",
-			Lang:        "SP",
-			Name:        "Mago Oscuro",
-			Description: "El mago supremo.",
+			ID:           1,
+			Names:        map[cards.LangCode]string{"sp": "Mago Oscuro"},
+			Descriptions: map[cards.LangCode]string{"sp": "El mago supremo."},
 		},
 		{
-			ID:          "YGO-125-EN",
-			Lang:        "EN",
-			Name:        "Ojama Black",
-			Description: "It is very weak, but it can be used as a shield.",
+			ID:           2,
+			Names:        map[cards.LangCode]string{"en": "Ojama Black"},
+			Descriptions: map[cards.LangCode]string{"en": "It is very weak, but it can be used as a shield."},
 		},
 		{
-			ID:          "YGO-125-SP",
-			Lang:        "SP",
-			Name:        "Ojama Negro",
-			Description: "Es muy débil, pero se puede usar como escudo.",
+			ID:           3,
+			Names:        map[cards.LangCode]string{"sp": "Ojama Negro"},
+			Descriptions: map[cards.LangCode]string{"sp": "Es muy débil, pero se puede usar como escudo."},
 		},
 		{
-			ID:          "YGO-123-EN",
-			Lang:        "EN",
-			Name:        "Dark Magician",
-			Description: "El mago supremo.",
+			ID:           4,
+			Names:        map[cards.LangCode]string{"en": "Dark Magician"},
+			Descriptions: map[cards.LangCode]string{"en": "El mago supremo."},
 		},
 		{
-			ID:          "YGO-001-EN",
-			Lang:        "EN",
-			Name:        "Blue-Eyes White Dragon",
-			Description: "This legendary dragon is a powerful engine of destruction.",
+			ID:           5,
+			Names:        map[cards.LangCode]string{"en": "Blue-Eyes White Dragon"},
+			Descriptions: map[cards.LangCode]string{"en": "This legendary dragon is a powerful engine of destruction."},
 		},
 	}
 
@@ -61,8 +56,10 @@ func main() {
 		cardsGroup.GET("/search", handler.GetByNameHandler)
 		// /cards/scg-1234
 		cardsGroup.GET("/:id", handler.GetByIDHandler)
-		// /cards/search/provider/ygo/id/1234
-		cardsGroup.GET("/provider/:provider/:id", searchHandler.GetFromProvider)
+		// /cards/search/:provider/:id   (por id) /cards/search/ygo/1234
+		cardsGroup.GET("/search/:provider/:id", searchHandler.SearchByIDInProvider)
+		// /cards/search/:provider?name=Kuriboh
+		cardsGroup.GET("/search/:provider", searchHandler.SearchByNamesInProvider)
 	}
 
 	log.Println("Servidor iniciado en http://localhost:8080")
