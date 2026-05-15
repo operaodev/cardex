@@ -20,11 +20,11 @@ type ResultCard struct {
 	Archetype    string                    `json:"archetype,omitempty"`
 	Sources      []string                  `json:"sources,omitempty"`
 	Images       []cards.CardImage         `json:"images,omitempty"`
-
 	PrintedCards []ResultPrintedCard `json:"printedCards,omitempty"`
 }
 
 type TCGProvider interface {
+	FetchAllCards() ([]ResultCard, error)
 	FetchCardByID(id string) (ResultCard, error)
 	FetchCardsByName(name string) ([]ResultCard, error)
 }

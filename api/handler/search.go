@@ -15,6 +15,19 @@ func NewSearchHandler(s *search.Service) *SearchHandler {
 	return &SearchHandler{svc: s}
 }
 
+// SearchAllInProvider maneja GET /cards/search/:provider
+func (h *SearchHandler) SearchAllInProvider(c *gin.Context) {
+	provider := c.Param("provider")
+
+	results, err := h.svc.SearchAll(provider)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, results)
+}
+
 // SearchByIDInProvider maneja GET /cards/search/:provider/:id
 func (h *SearchHandler) SearchByIDInProvider(c *gin.Context) {
 	provider := c.Param("provider")

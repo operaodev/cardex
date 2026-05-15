@@ -1,11 +1,13 @@
 package providers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/operaodev/cardex/internal/cards"
 	"github.com/operaodev/cardex/internal/search"
@@ -34,106 +36,155 @@ func NewYGOProvider() *YGOProvider {
 	}
 }
 
-func (p *YGOProvider) FetchCardByID(id string) (search.ResultCard, error) {
-	reqURL := fmt.Sprintf("%s/cardinfo.php?id=%s", p.ygoproBaseURL, id)
-
-	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
-	if err != nil {
-		return search.ResultCard{}, err
-	}
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return search.ResultCard{}, err
-	}
-
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return search.ResultCard{},
-			fmt.Errorf("código de estado inesperado: %d", resp.StatusCode)
-	}
-
-	var responseYGOPRO struct {
-		Data []YGOProCard `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&responseYGOPRO); err != nil {
-		return search.ResultCard{}, err
-	}
-
-	ygoproResult := responseYGOPRO.Data[0]
-
-	yugipediaResults, err := p.getTotalCardInfo(ygoproResult.Name)
-	if err != nil {
-		return search.ResultCard{},
-			fmt.Errorf("error obteniendo info de Yugipedia: %w", err)
-	}
-
-	// Usar el primer (y único) resultado de Yugipedia como base
-	var result search.ResultCard
-	if len(yugipediaResults) > 0 {
-		result = yugipediaResults[0]
-	}
-
-	// Completar con los datos base de YGOPRO que Yugipedia no provee
-	result.ExternalID = fmt.Sprintf("%d", ygoproResult.ID)
-	types := strings.Split(ygoproResult.Types, " ")
-	result.Type = types[len(types)-1]
-	result.Subtypes = types[:len(types)-1]
-	result.Archetype = ygoproResult.Archetype
-	result.Images = ygoproResult.Images
-	result.TCG = cards.TCGYugioh
-	result.Sources = append(result.Sources, ygoproResult.YgoprodeckURL)
-	result.Sources = append(result.Sources, "https://yugipedia.com/wiki/"+url.QueryEscape(ygoproResult.Name))
-
-	// El nombre en inglés viene de YGOPRO (es la fuente principal en EN)
-	if result.Names == nil {
-		result.Names = make(map[cards.LangCode]string)
-	}
-	result.Names[cards.EN] = ygoproResult.Name
-
-	return result, nil
-}
-
-func (p *YGOProvider) FetchCardsByName(name string) ([]search.ResultCard, error) {
-	// YGOPRO acepta búsqueda fuzzy por nombre con el parámetro fname
-	reqURL := fmt.Sprintf("%s/cardinfo.php?fname=%s", p.ygoproBaseURL, url.QueryEscape(name))
-
-	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+func (p *YGOProvider) FetchAllCards() ([]search.ResultCard, error) {
+	reqURL := fmt.Sprintf("%s/cardinfo.php?", p.ygoproBaseURL)
+	ygoproCards, err := p.fetchFromYGOPro(reqURL)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("código de estado inesperado de YGOPRODeck: %d", resp.StatusCode)
-	}
-
-	var responseYGOPRO struct {
-		Data []YGOProCard `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&responseYGOPRO); err != nil {
-		return nil, err
-	}
-
-	if len(responseYGOPRO.Data) == 0 {
+	if len(ygoproCards) == 0 {
 		return []search.ResultCard{}, nil
 	}
 
-	// Recolectar todos los nombres para hacer una sola request a Yugipedia
-	// Limitar a 20 nombres porque la API de Yugipedia devuelve error 414 si se envían demasiados
-	limit := min(len(responseYGOPRO.Data), 20)
-	responseYGOPRO.Data = responseYGOPRO.Data[:limit]
+	// Dividir las ~11k cartas en lotes de 20 (límite de Yugipedia)
+	const (
+		batchSize     = 20
+		maxConcurrent = 10 // goroutines concurrentes máximas hacia Yugipedia
+	)
+
+	var batches [][]YGOProCard
+	for i := 0; i < len(ygoproCards); i += batchSize {
+		end := min(i+batchSize, len(ygoproCards))
+		batches = append(batches, ygoproCards[i:end])
+	}
+
+	type batchResult struct {
+		index   int
+		results []search.ResultCard
+		err     error
+	}
+
+	// context para cancelar goroutines pendientes si ocurre un error
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sem := make(chan struct{}, maxConcurrent)
+	resultsCh := make(chan batchResult, len(batches))
+
+	var wg sync.WaitGroup
+	for i, batch := range batches {
+		wg.Add(1)
+		go func(idx int, b []YGOProCard) {
+			defer wg.Done()
+
+			// Adquirir slot del semaforo o cancelar si hubo error en otro batch
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				resultsCh <- batchResult{index: idx, err: ctx.Err()}
+				return
+			}
+
+			names := make([]string, len(b))
+			for j, c := range b {
+				names[j] = c.Name
+			}
+
+			yugipediaResults, fetchErr := p.getTotalCardInfo(names...)
+			if fetchErr != nil {
+				resultsCh <- batchResult{index: idx, err: fetchErr}
+				return
+			}
+
+			yugipediaByName := make(map[string]search.ResultCard, len(yugipediaResults))
+			for _, yResult := range yugipediaResults {
+				if enName, ok := yResult.Names[cards.EN]; ok {
+					yugipediaByName[enName] = yResult
+				}
+			}
+
+			batchCards := make([]search.ResultCard, 0, len(b))
+			for _, ygoproCard := range b {
+				yResult := yugipediaByName[ygoproCard.Name]
+				batchCards = append(batchCards, p.mergeWithYGOPro(ygoproCard, yResult))
+			}
+
+			resultsCh <- batchResult{index: idx, results: batchCards}
+		}(i, batch)
+	}
+
+	// Cerrar el canal cuando todas las goroutines terminen
+	go func() {
+		wg.Wait()
+		close(resultsCh)
+	}()
+
+	// Recolectar resultados en orden usando el index del batch
+	orderedResults := make([][]search.ResultCard, len(batches))
+	var firstErr error
+	for br := range resultsCh {
+		if br.err != nil && firstErr == nil {
+			firstErr = br.err
+			cancel() // abortar goroutines pendientes
+		}
+		if br.results != nil {
+			orderedResults[br.index] = br.results
+		}
+	}
+
+	if firstErr != nil {
+		return nil, fmt.Errorf("error procesando lote desde Yugipedia: %w", firstErr)
+	}
+
+	// Aplanar los resultados en orden de los batches
+	allResults := make([]search.ResultCard, 0, len(ygoproCards))
+	for _, batch := range orderedResults {
+		allResults = append(allResults, batch...)
+	}
+
+	return allResults, nil
+}
+
+func (p *YGOProvider) FetchCardByID(id string) (search.ResultCard, error) {
+	reqURL := fmt.Sprintf("%s/cardinfo.php?id=%s", p.ygoproBaseURL, id)
+	cards, err := p.fetchFromYGOPro(reqURL)
+	if err != nil {
+		return search.ResultCard{}, err
+	}
+
+	ygoproResult := cards[0]
+	yugipediaResults, err := p.getTotalCardInfo(ygoproResult.Name)
+	if err != nil {
+		return search.ResultCard{}, fmt.Errorf("error obteniendo info de Yugipedia: %w", err)
+	}
+
+	var yResult search.ResultCard
+	if len(yugipediaResults) > 0 {
+		yResult = yugipediaResults[0]
+	}
+
+	return p.mergeWithYGOPro(ygoproResult, yResult), nil
+}
+
+func (p *YGOProvider) FetchCardsByName(name string) ([]search.ResultCard, error) {
+	reqURL := fmt.Sprintf("%s/cardinfo.php?fname=%s", p.ygoproBaseURL, url.QueryEscape(name))
+	ygoproCards, err := p.fetchFromYGOPro(reqURL)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(ygoproCards) == 0 {
+		return []search.ResultCard{}, nil
+	}
+
+	// Limitar a 20 para no saturar la API de Yugipedia
+	limit := min(len(ygoproCards), 20)
+	ygoproCards = ygoproCards[:limit]
 
 	allNames := make([]string, limit)
-	for i, c := range responseYGOPRO.Data {
+	for i, c := range ygoproCards {
 		allNames[i] = c.Name
 	}
 
@@ -142,7 +193,6 @@ func (p *YGOProvider) FetchCardsByName(name string) ([]search.ResultCard, error)
 		return nil, fmt.Errorf("error obteniendo info de Yugipedia: %w", err)
 	}
 
-	// Indexar resultados de Yugipedia por nombre EN para cruzarlos
 	yugipediaByName := make(map[string]search.ResultCard, len(yugipediaResults))
 	for _, yResult := range yugipediaResults {
 		if enName, ok := yResult.Names[cards.EN]; ok {
@@ -150,31 +200,10 @@ func (p *YGOProvider) FetchCardsByName(name string) ([]search.ResultCard, error)
 		}
 	}
 
-	results := make([]search.ResultCard, 0, len(responseYGOPRO.Data))
-
-	for _, ygoproCard := range responseYGOPRO.Data {
-		result, ok := yugipediaByName[ygoproCard.Name]
-		if !ok {
-			result = search.ResultCard{}
-		}
-
-		// Completar con los datos base de YGOPRO que Yugipedia no provee
-		result.ExternalID = fmt.Sprintf("%d", ygoproCard.ID)
-		types := strings.Split(ygoproCard.Types, " ")
-		result.Type = types[len(types)-1]
-		result.Subtypes = types[:len(types)-1]
-		result.Archetype = ygoproCard.Archetype
-		result.Images = ygoproCard.Images
-		result.TCG = cards.TCGYugioh
-		result.Sources = append(result.Sources, ygoproCard.YgoprodeckURL)
-		result.Sources = append(result.Sources, "https://yugipedia.com/wiki/"+url.QueryEscape(ygoproCard.Name))
-
-		if result.Names == nil {
-			result.Names = make(map[cards.LangCode]string)
-		}
-		result.Names[cards.EN] = ygoproCard.Name
-
-		results = append(results, result)
+	results := make([]search.ResultCard, 0, len(ygoproCards))
+	for _, ygoproCard := range ygoproCards {
+		yResult := yugipediaByName[ygoproCard.Name]
+		results = append(results, p.mergeWithYGOPro(ygoproCard, yResult))
 	}
 
 	return results, nil
@@ -251,110 +280,55 @@ func (p *YGOProvider) getTotalCardInfo(names ...string) ([]search.ResultCard, er
 	return totalCards, nil
 }
 
-// extractLocalizedValues busca claves como:
-// | fr_name = ...
-// | es_text = ...
-func extractLocalizedValues(content string, keys []cards.LangCode) map[cards.LangCode]string {
-	result := make(map[cards.LangCode]string)
-
-	lines := strings.Split(content, "\n")
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-
-		if line == "" || !strings.Contains(line, "=") {
-			continue
-		}
-
-		for _, key := range keys {
-			keyStr := string(key)
-			prefix := "| " + keyStr
-
-			if strings.HasPrefix(line, prefix) {
-				parts := strings.SplitN(line, "=", 2)
-
-				if len(parts) != 2 {
-					continue
-				}
-
-				value := strings.TrimSpace(parts[1])
-
-				if keyStr == "text" {
-					result[cards.EN] = value
-				} else {
-					result[key] = value
-				}
-			}
-		}
+func (p *YGOProvider) fetchFromYGOPro(url string) ([]YGOProCard, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
 	}
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("código de estado inesperado de YGOPRODeck: %d", resp.StatusCode)
+	}
+
+	var response struct {
+		Data []YGOProCard `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, err
+	}
+
+	return response.Data, nil
+}
+
+func (p *YGOProvider) mergeWithYGOPro(ygoproCard YGOProCard, yResult search.ResultCard) search.ResultCard {
+	result := yResult
+
+	result.ExternalID = fmt.Sprintf("%d", ygoproCard.ID)
+
+	types := strings.Split(ygoproCard.Types, " ")
+	if len(types) > 0 {
+		result.Type = types[len(types)-1]
+		result.Subtypes = types[:len(types)-1]
+	}
+
+	result.Archetype = ygoproCard.Archetype
+	result.Images = ygoproCard.Images
+	result.TCG = cards.TCGYugioh
+
+	result.Sources = append(result.Sources, ygoproCard.YgoprodeckURL)
+	result.Sources = append(result.Sources, "https://yugipedia.com/wiki/"+url.QueryEscape(ygoproCard.Name))
+
+	if result.Names == nil {
+		result.Names = make(map[cards.LangCode]string)
+	}
+	result.Names[cards.EN] = ygoproCard.Name
 
 	return result
 }
-
-// func scrapeYugipediaCard(url string) (map[cards.LangCode]cards.Card, error) {
-// 	c := colly.NewCollector(
-// 		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
-// 	)
-
-// 	var scrapeErr error
-// 	c.OnError(func(r *colly.Response, err error) {
-// 		scrapeErr = fmt.Errorf("error scraping %s: %w (Status: %d)",
-// 			r.Request.URL, err, r.StatusCode)
-// 	})
-
-// 	result := make(map[cards.LangCode]cards.Card)
-
-// 	// Track the current language across rowspan rows.
-// 	var currentLang cards.LangCode
-// 	var currentCardText string
-
-// 	c.OnHTML("table.wikitable:not(.sortable) tbody tr", func(row *colly.HTMLElement) {
-// 		// The language header cell is a <th scope="row">.
-// 		langCell := strings.TrimSpace(row.ChildText("th[scope=row]"))
-
-// 		// If this row has a language header, update our tracking variables.
-// 		if langCell != "" {
-// 			code, ok := yugipediaLangMap[langCell]
-// 			if !ok {
-// 				// Unknown language — skip the row.
-// 				currentLang = ""
-// 				return
-// 			}
-// 			currentLang = code
-
-// 			// The card text may span multiple rows (rowspan); grab it here
-// 			// if present (it won't appear in the second row for JP/KR).
-// 			currentCardText = strings.TrimSpace(row.ChildText("td:last-child"))
-// 		}
-
-// 		// Skip rows without a recognised language.
-// 		if currentLang == "" {
-// 			return
-// 		}
-
-// 		// The name is always in the first <td> of the row.
-// 		name := strings.TrimSpace(row.ChildText("td:first-of-type"))
-// 		if name == "" {
-// 			// Second row of a rowspan (romanisation) — nothing new to store.
-// 			return
-// 		}
-
-// 		langName, _ := cards.GetLangName(currentLang)
-
-// 		result[currentLang] = cards.Card{
-// 			Lang:        currentLang,
-// 			Language:    langName,
-// 			Name:        name,
-// 			Description: currentCardText,
-// 		}
-// 	})
-
-// 	if err := c.Visit(url); err != nil {
-// 		return nil, fmt.Errorf("error scraping %s: %w", url, err)
-// 	}
-// 	if scrapeErr != nil {
-// 		return nil, scrapeErr
-// 	}
-
-// 	return result, nil
-// }

@@ -1,0 +1,28 @@
+# Binarios
+bin/
+cardex
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Dependencias
+vendor/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker & DB
+.env
+postgres_data/
+
+# Logs
+*.log

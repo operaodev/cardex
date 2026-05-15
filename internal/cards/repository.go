@@ -2,62 +2,217 @@ package cards
 
 import (
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Repository define los métodos que nuestra capa de datos debe tener.
-// Ahora las firmas son mucho más limpias gracias al diseño relacional.
 type Repository interface {
 	Create(card *Card) error
+	Upsert(cards []Card) (int, error)
 	GetByID(id uint64) (*Card, error)
-	GetByName(tcg TCG, name string) ([]Card, error)
+	GetSuggestions(tcg TCG, lang LangCode, name string) ([]RecommendationCardDTO, error)
+	GetCatalog(filters CatalogFilters) (*PaginatedResult[SummaryCardDTO], error)
 }
 
-// repository es la implementación real que usará PostgreSQL y GORM.
 type repository struct {
 	db *gorm.DB
 }
 
-// NewRepository crea una nueva instancia del repositorio de cartas.
 func NewRepository(db *gorm.DB) Repository {
 	return &repository{
 		db: db,
 	}
 }
 
-// Create inserta una carta (fila única con todos sus campos).
+// Create ejecuta un simple INSERT INTO cards en la tabla a través de GORM.
 func (r *repository) Create(card *Card) error {
 	return r.db.Create(card).Error
 }
 
-// GetByID busca una carta por su ID exacto (ej. 1).
-// Al ser tabla única no se necesita ningún join ni preload.
+// Upsert inserta o actualiza un lote de cartas en la DB de forma idempotente.
+// A nivel SQL ejecuta un INSERT ... ON CONFLICT (...) DO UPDATE SET ... usando
+// la identidad única de la carta para evitar duplicados, procesando todo en lotes.
+// Devuelve el número de filas afectadas.
+func (r *repository) Upsert(cards []Card) (int, error) {
+	const batchSize = 100
+
+	total := 0
+	for i := 0; i < len(cards); i += batchSize {
+		end := min(i+batchSize, len(cards))
+		batch := cards[i:end]
+
+		result := r.db.Clauses(clause.OnConflict{
+			// idx_card_identity: ExternalID+Code+Lang+Rarity+SetName es la identidad única
+			Columns: []clause.Column{
+				{Name: "external_id"},
+				{Name: "code"},
+				{Name: "lang"},
+				{Name: "rarity"},
+				{Name: "set_name"},
+			},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"english_name", "name", "description",
+				"type", "subtypes", "archetype",
+				"sources", "card_images",
+				"set_name", "set_english_name", "set_code",
+				"rarity", "print", "code",
+				"updated_at",
+			}),
+		}).Create(&batch)
+
+		if result.Error != nil {
+			return total, result.Error
+		}
+		total += int(result.RowsAffected)
+	}
+
+	return total, nil
+}
+
+// GetByID busca una carta por su ID exacto.
+// A nivel SQL ejecuta un SELECT * FROM cards WHERE id = ? ORDER BY id LIMIT 1.
 func (r *repository) GetByID(id uint64) (*Card, error) {
 	var card Card
-
-	result := r.db.Where(&Card{ID: id}).First(&card)
+	result := r.db.First(&card, id)
 	if result.Error != nil {
 		return nil, result.Error
 	}
-
 	return &card, nil
 }
 
-// GetByName busca cartas por nombre y carga sus PrintedCards filtradas por el idioma que coincidió.
-func (r *repository) GetByName(tcg TCG, name string) ([]Card, error) {
-	var cards []Card
-	searchPattern := "%" + name + "%"
+// GetSuggestions busca cartas por nombre, tcg y lang.
+// A nivel SQL ejecuta un SELECT de campos específicos con ILIKE para coincidencias parciales
+// y LIMIT 10. Devuelve un DTO ligero con los datos mínimos para mostrar sugerencias.
+func (r *repository) GetSuggestions(tcg TCG, lang LangCode, name string) ([]RecommendationCardDTO, error) {
+	var results []RecommendationCardDTO
+	searchPattern := name + "%"
 
-	// Usamos un JOIN con jsonb_each_text para encontrar qué idioma (k) coincide con la búsqueda (v).
-	// Esto nos permite obtener el 'matched_lang' para cada carta.
-	result := r.db.Table("cards").
-		Select("cards.*, kv.k as matched_lang").
-		Joins("JOIN jsonb_each_text(cards.names) AS kv(k, v) ON kv.v ILIKE ?", searchPattern).
-		Preload("PrintedCards", "lang IN (SELECT k FROM jsonb_each_text(cards.names) WHERE v ILIKE ?)", searchPattern).
-		Find(&cards)
+	query := r.db.Model(&Card{}).
+		Select(`
+		id,
+		tcg,
+		name,
+		english_name,
+		code,
+		rarity,
+		set_name,
+		print,
+		COALESCE(NULLIF(print_image, ''), card_images->0->>'image_url') AS image
+	`).
+		Where("name ILIKE ? OR english_name ILIKE ?", searchPattern, searchPattern).
+		Limit(10)
 
-	if result.Error != nil {
-		return nil, result.Error
+	if tcg != "" {
+		query = query.Where("tcg = ?", tcg)
+	}
+	if lang != "" {
+		query = query.Where("lang = ?", lang)
 	}
 
-	return cards, nil
+	if err := query.Scan(&results).Error; err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// GetCatalog busca cartas aplicando filtros opcionales con paginación.
+// A nivel SQL ejecuta un SELECT count(*) seguido de un SELECT de campos específicos con OFFSET y LIMIT,
+// construyendo dinámicamente cláusulas WHERE (incluyendo @> para buscar en JSONB).
+// Devuelve un SummaryCardDTO con los campos necesarios para el catálogo.
+// Todos los filtros son opcionales; Page y Limit son obligatorios.
+func (r *repository) GetCatalog(filters CatalogFilters) (*PaginatedResult[SummaryCardDTO], error) {
+	var cards []Card
+	var total int64
+
+	query := r.db.Model(&Card{})
+
+	// Aplicar filtros opcionales
+	if filters.Name != "" {
+		query = query.Where("name ILIKE ?", "%"+filters.Name+"%")
+	}
+	if filters.TCG != "" {
+		query = query.Where("tcg = ?", filters.TCG)
+	}
+	if filters.Lang != "" {
+		query = query.Where("lang = ?", filters.Lang)
+	}
+	if filters.Type != "" {
+		query = query.Where("type = ?", filters.Type)
+	}
+	if filters.Archetype != "" {
+		query = query.Where("archetype ILIKE ?", "%"+filters.Archetype+"%")
+	}
+	if filters.Subtype != "" {
+		query = query.Where("subtypes @> ?", `["`+filters.Subtype+`"]`)
+	}
+	if filters.SetCode != "" {
+		query = query.Where("set_code = ?", filters.SetCode)
+	}
+	if filters.Rarity != "" {
+		query = query.Where("rarity = ?", filters.Rarity)
+	}
+
+	// Contar total para la paginación
+	if err := query.Count(&total).Error; err != nil {
+		return nil, err
+	}
+
+	// Aplicar paginación y recuperar solo los campos necesarios (evitando descripción y fuentes enteras)
+	offset := (filters.Page - 1) * filters.Limit
+	err := query.Select(`
+		id,
+		tcg,
+		english_name,
+		name,
+		lang,
+		code,
+		type,
+		subtypes,
+		archetype,
+		set_name,
+		set_code,
+		rarity,
+		print,
+		wanted,
+		COALESCE(NULLIF(print_image, ''), card_images->0->>'image_url') AS print_image
+	`).
+		Offset(offset).Limit(filters.Limit).Order("id ASC").Find(&cards).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// Mapear a DTOs
+	results := make([]SummaryCardDTO, len(cards))
+	for i, c := range cards {
+		results[i] = SummaryCardDTO{
+			ID:          c.ID,
+			TCG:         c.TCG,
+			EnglishName: c.EnglishName,
+			Name:        c.Name,
+			Lang:        c.Lang,
+			Code:        c.Code,
+			Type:        c.Type,
+			Subtypes:    c.Subtypes,
+			Archetype:   c.Archetype,
+			SetName:     c.SetName,
+			SetCode:     c.SetCode,
+			Rarity:      c.Rarity,
+			Print:       c.Print,
+			Wanted:      c.Wanted,
+			Image:       c.PrintImage, // PrintImage ya trae la imagen computada desde SQL
+		}
+	}
+
+	totalPages := int(total) / filters.Limit
+	if int(total)%filters.Limit != 0 {
+		totalPages++
+	}
+
+	return &PaginatedResult[SummaryCardDTO]{
+		Data:       results,
+		Total:      int(total),
+		Page:       filters.Page,
+		Limit:      filters.Limit,
+		TotalPages: totalPages,
+	}, nil
 }
