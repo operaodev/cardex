@@ -15,8 +15,25 @@ type Server struct {
 }
 
 func NewServer(cardsH *handler.CardsHandler, searchH *handler.SearchHandler, syncH *handler.SyncHandler) *Server {
+	router := gin.Default()
+
+	// Middleware de CORS
+	router.Use(func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	})
+
 	s := &Server{
-		router:        gin.Default(),
+		router:        router,
 		cardsHandler:  cardsH,
 		searchHandler: searchH,
 		syncHandler:   syncH,
