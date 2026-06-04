@@ -1,57 +1,57 @@
 package handler
 
-import (
-	"net/http"
+// import (
+// 	"net/http"
 
-	"github.com/gin-gonic/gin"
-	"github.com/operaodev/cardex/internal/search"
-)
+// 	"github.com/gin-gonic/gin"
+// 	"github.com/operaodev/cardex/internal/search"
+// )
 
-type SearchHandler struct {
-	svc *search.Service
-}
+// type SearchHandler struct {
+// 	svc *search.Service
+// }
 
-func NewSearchHandler(s *search.Service) *SearchHandler {
-	return &SearchHandler{svc: s}
-}
+// func NewSearchHandler(s *search.Service) *SearchHandler {
+// 	return &SearchHandler{svc: s}
+// }
 
-// SearchAllInProvider maneja GET /cards/search/:provider
-func (h *SearchHandler) SearchAllInProvider(c *gin.Context) {
-	provider := c.Param("provider")
+// // SearchAllInProvider maneja GET /cards/search/:provider
+// func (h *SearchHandler) SearchAllInProvider(c *gin.Context) {
+// 	provider := c.Param("provider")
 
-	results, err := h.svc.SearchAll(provider)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
+// 	results, err := h.svc.SearchAll(provider)
+// 	if err != nil {
+// 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+// 		return
+// 	}
 
-	c.JSON(http.StatusOK, results)
-}
+// 	c.JSON(http.StatusOK, results)
+// }
 
-// SearchByIDInProvider maneja GET /cards/search/:provider/:id
-func (h *SearchHandler) SearchByIDInProvider(c *gin.Context) {
-	provider := c.Param("provider")
-	id := c.Param("id")
+// // SearchByIDInProvider maneja GET /cards/search/:provider/:id
+// func (h *SearchHandler) SearchByIDInProvider(c *gin.Context) {
+// 	provider := c.Param("provider")
+// 	id := c.Param("id")
 
-	result, err := h.svc.SearchByID(provider, id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
+// 	result, err := h.svc.SearchByID(provider, id)
+// 	if err != nil {
+// 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+// 		return
+// 	}
 
-	c.JSON(http.StatusOK, result)
-}
+// 	c.JSON(http.StatusOK, result)
+// }
 
-// SearchByNamesInProvider maneja GET /cards/search/:provider?name=Kuriboh
-func (h *SearchHandler) SearchByNamesInProvider(c *gin.Context) {
-	provider := c.Param("provider")
-	name := c.Query("name")
+// // SearchByNamesInProvider maneja GET /cards/search/:provider?name=Kuriboh
+// func (h *SearchHandler) SearchByNamesInProvider(c *gin.Context) {
+// 	provider := c.Param("provider")
+// 	name := c.Query("name")
 
-	results, err := h.svc.SearchByNames(provider, name)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
+// 	results, err := h.svc.SearchByNames(provider, name)
+// 	if err != nil {
+// 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+// 		return
+// 	}
 
-	c.JSON(http.StatusOK, results)
-}
+// 	c.JSON(http.StatusOK, results)
+// }

@@ -9,19 +9,21 @@ import (
 
 type Server struct {
 	router           *gin.Engine
+	providersHandler *handler.ProviderHandler
 	cardsHandler     *handler.CardsHandler
-	searchHandler    *handler.SearchHandler
-	syncHandler      *handler.SyncHandler
 	usersHandler     *handler.UsersHandler
 	inventoryHandler *handler.InventoryHandler
+	syncHandler      *handler.SyncHandler
+	itemsHandler     *handler.ItemsHandler
 }
 
 func NewServer(
+	providersH *handler.ProviderHandler,
 	cardsH *handler.CardsHandler,
-	searchH *handler.SearchHandler,
-	syncH *handler.SyncHandler,
 	usersH *handler.UsersHandler,
 	inventoryH *handler.InventoryHandler,
+	syncH *handler.SyncHandler,
+	itemsH *handler.ItemsHandler,
 ) *Server {
 	router := gin.Default()
 
@@ -42,11 +44,12 @@ func NewServer(
 
 	s := &Server{
 		router:           router,
+		providersHandler: providersH,
 		cardsHandler:     cardsH,
-		searchHandler:    searchH,
-		syncHandler:      syncH,
 		usersHandler:     usersH,
 		inventoryHandler: inventoryH,
+		syncHandler:      syncH,
+		itemsHandler:     itemsH,
 	}
 	s.setupRoutes()
 	return s
@@ -64,11 +67,14 @@ func (s *Server) setupRoutes() {
 
 		// Proveedores externos
 		// GET /cards/search/:provider/:id
-		cardsGroup.GET("/search/:provider/:id", s.searchHandler.SearchByIDInProvider)
-		// GET /cards/search/:provider?name=Kuriboh
-		cardsGroup.GET("/search/:provider", s.searchHandler.SearchByNamesInProvider)
-		// GET /cards/search/:provider/all
-		cardsGroup.GET("/search/:provider/all", s.searchHandler.SearchAllInProvider)
+	}
+
+	providersGroup := s.router.Group("/providers")
+	{
+		// GET /providers/:provider/cards
+		providersGroup.GET("/:provider/cards", s.providersHandler.FetchCards)
+		// GET /providers/:provider/cards/:name
+		providersGroup.GET("/:provider/cards/:name", s.providersHandler.FetchCardsByName)
 	}
 
 	// Rutas de sincronización (administración)
@@ -78,6 +84,8 @@ func (s *Server) setupRoutes() {
 		syncGroup.GET("/status", s.syncHandler.SyncStatus)
 		// POST /sync/ygo
 		syncGroup.POST("/:tcg", s.syncHandler.TriggerSync)
+		// POST /sync/ygo/by-name
+		syncGroup.POST("/:tcg/by-name", s.syncHandler.TriggerSyncByName)
 	}
 
 	// Rutas de usuarios (auth)
@@ -89,7 +97,18 @@ func (s *Server) setupRoutes() {
 		usersGroup.POST("/login", s.usersHandler.Login)
 	}
 
-	// Rutas de inventario
+	// Rutas de ítems
+	itemsGroup := s.router.Group("/items")
+	{
+		// Las rutas fijas deben ir antes del comodín :id
+		// POST /items/suggestions
+		itemsGroup.POST("/suggestions", s.itemsHandler.FindSuggestions)
+		// GET /items/random/:count
+		itemsGroup.GET("/random/:count", s.itemsHandler.GetRandomNames)
+		// GET /items/:id
+		itemsGroup.GET("/:id", s.itemsHandler.GetByID)
+	}
+
 	invGroup := s.router.Group("/inventory")
 	{
 		// GET /inventory/:user_id

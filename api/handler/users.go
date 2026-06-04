@@ -23,7 +23,7 @@ func NewUsersHandler(s users.Service) *UsersHandler {
 func (h *UsersHandler) Register(c *gin.Context) {
 	var input users.RegisterInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Cuerpo de la petición inválido"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": ErrInvalidJSONBody})
 		return
 	}
 

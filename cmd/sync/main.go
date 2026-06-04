@@ -6,16 +6,16 @@ import (
 	"os"
 
 	"github.com/joho/godotenv"
-	"github.com/operaodev/cardex/internal/cards"
 	"github.com/operaodev/cardex/internal/database"
-	"github.com/operaodev/cardex/internal/search"
-	searchproviders "github.com/operaodev/cardex/internal/search/providers"
+	"github.com/operaodev/cardex/internal/items"
+	"github.com/operaodev/cardex/internal/providers"
 	syncsvc "github.com/operaodev/cardex/internal/sync"
 )
 
 func main() {
 	// Flags CLI
 	tcg := flag.String("tcg", "ygo", "TCG a sincronizar (ygo, mtg, pkm)")
+	name := flag.String("name", "", "Nombre de la carta para sincronizar una específica (opcional)")
 	envFile := flag.String("env", ".env", "Ruta al archivo .env")
 	flag.Parse()
 
@@ -28,14 +28,24 @@ func main() {
 	database.Connect()
 
 	// Capas de la aplicación
-	repo := cards.NewRepository(database.DB)
-	ygoProv := searchproviders.NewYGOProvider()
-	searchSvc := search.NewService(ygoProv)
-	svc := syncsvc.NewSyncService(searchSvc, repo)
+	itemsRepo := items.NewRepository(database.DB)
+	ygoProv := providers.NewYGOProvider()
+	providerSvc := providers.NewService(ygoProv)
+	svc := syncsvc.NewSyncService(providerSvc, itemsRepo)
 
-	log.Printf("[sync] Iniciando sincronización manual para TCG=%s", *tcg)
+	var n int
+	var err error
 
-	n, err := svc.SyncAll(*tcg)
+	tcgEnum := items.TCG(*tcg)
+
+	if *name != "" {
+		log.Printf("[sync] Iniciando sincronización manual por nombre para TCG=%s, Name=%s", *tcg, *name)
+		n, err = svc.SyncByName(tcgEnum, *name)
+	} else {
+		log.Printf("[sync] Iniciando sincronización manual para TCG=%s", *tcg)
+		n, err = svc.SyncAll(tcgEnum)
+	}
+
 	if err != nil {
 		log.Printf("[sync] ERROR: %v", err)
 		os.Exit(1)

@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
+	"github.com/operaodev/cardex/internal/items"
 	syncsvc "github.com/operaodev/cardex/internal/sync"
 )
 
@@ -26,7 +27,7 @@ func NewSyncHandler(svc *syncsvc.SyncService) *SyncHandler {
 //
 //	POST /sync/:tcg
 func (h *SyncHandler) TriggerSync(c *gin.Context) {
-	tcg := c.Param("tcg")
+	tcg := items.TCG(c.Param("tcg"))
 	if tcg == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Debe especificar el TCG (e.g. /sync/ygo)"})
 		return
@@ -53,6 +54,50 @@ func (h *SyncHandler) TriggerSync(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{
 		"message": "Sincronización iniciada en segundo plano",
 		"tcg":     tcg,
+	})
+}
+
+// TriggerSyncByName dispara una sincronización asíncrona en segundo plano para una carta en particular.
+// Query param: tcg (requerido), body: name (requerido)
+//
+//	POST /sync/:tcg/by-name
+func (h *SyncHandler) TriggerSyncByName(c *gin.Context) {
+	tcg := items.TCG(c.Param("tcg"))
+	if tcg == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Debe especificar el TCG (e.g. /sync/ygo)"})
+		return
+	}
+
+	var req struct {
+		Name string `json:"name" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Debe proporcionar el nombre de la carta en el body"})
+		return
+	}
+
+	// Evitar sincronizaciones concurrentes
+	if !h.running.CompareAndSwap(false, true) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "Ya hay una sincronización en progreso. Intenta de nuevo más tarde.",
+		})
+		return
+	}
+
+	go func() {
+		defer h.running.Store(false)
+		n, err := h.svc.SyncByName(tcg, req.Name)
+		if err != nil {
+			log.Printf("[sync] ERROR durante sincronización por nombre (%s) de %s: %v", req.Name, tcg, err)
+			return
+		}
+		log.Printf("[sync] Sincronización por nombre de %s completada: %d cartas procesadas", tcg, n)
+	}()
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"message": "Sincronización por nombre iniciada en segundo plano",
+		"tcg":     tcg,
+		"name":    req.Name,
 	})
 }
 

@@ -4,17 +4,19 @@ import (
 	"time"
 )
 
-type Print string
-type Rarity string
-type TCG string
-
-const (
-	TCGMagic   TCG = "mtg"
-	TCGYugioh  TCG = "ygo"
-	TCGPokemon TCG = "pkm"
+type (
+	TCG    string
+	Rarity string
+	Print  string
 )
 
-// Code: "RAO5-SP001"
+const (
+	MTG TCG = "Magic"
+	YGO TCG = "Yu-Gi-Oh!"
+	PKM TCG = "Pokemon"
+)
+
+// Card Code: "RAO5-SP001"
 // Wanted: 10234
 // TCG: "ygo"
 // ExternalID: "ygo-100320"

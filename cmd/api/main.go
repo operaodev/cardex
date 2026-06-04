@@ -9,8 +9,8 @@ import (
 	"github.com/operaodev/cardex/internal/cards"
 	"github.com/operaodev/cardex/internal/database"
 	"github.com/operaodev/cardex/internal/inventory"
-	"github.com/operaodev/cardex/internal/search"
-	searchproviders "github.com/operaodev/cardex/internal/search/providers"
+	"github.com/operaodev/cardex/internal/items"
+	"github.com/operaodev/cardex/internal/providers"
 	syncsvc "github.com/operaodev/cardex/internal/sync"
 	"github.com/operaodev/cardex/internal/users"
 )
@@ -26,18 +26,21 @@ func main() {
 
 	// 2. Inicializar Repositorios (Capa de Datos)
 	repo := cards.NewRepository(database.DB)
+	itemsRepo := items.NewRepository(database.DB)
 
 	// 3. Inicializar Servicios (Lógica de Negocio)
 	cardsSvc := cards.NewService(repo)
+	itemsSvc := items.NewService(itemsRepo)
 
-	ygoProv := searchproviders.NewYGOProvider()
-	searchSvc := search.NewService(ygoProv)
+	ygoProv := providers.NewYGOProvider()
+	providerSvc := providers.NewService(ygoProv)
 
-	syncService := syncsvc.NewSyncService(searchSvc, repo)
+	syncService := syncsvc.NewSyncService(providerSvc, itemsRepo)
 
 	// 4. Inicializar Handlers (Capa de Transporte)
 	cardsHandler := handler.NewCardsHandler(cardsSvc)
-	searchHandler := handler.NewSearchHandler(searchSvc)
+	itemsHandler := handler.NewItemsHandler(itemsSvc)
+	providerHandler := handler.NewProviderHandler(providerSvc)
 	syncHandler := handler.NewSyncHandler(syncService)
 
 	usersRepo := users.NewRepository(database.DB)
@@ -49,7 +52,7 @@ func main() {
 	inventoryHandler := handler.NewInventoryHandler(invSvc)
 
 	// 5. Configurar e Iniciar Servidor
-	srv := api.NewServer(cardsHandler, searchHandler, syncHandler, usersHandler, inventoryHandler)
+	srv := api.NewServer(providerHandler, cardsHandler, usersHandler, inventoryHandler, syncHandler, itemsHandler)
 
 	if err := srv.Start(":8080"); err != nil {
 		log.Fatalf("Error al iniciar el servidor: %v", err)
