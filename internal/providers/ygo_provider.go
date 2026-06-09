@@ -3,6 +3,7 @@ package providers
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"net/url"
@@ -12,40 +13,8 @@ import (
 	"time"
 
 	"github.com/gocolly/colly"
-	"github.com/operaodev/cardex/internal/items"
+	"github.com/operaodev/cardex/internal/products"
 )
-
-const (
-	scrapeBatchSize      = 300
-	scrapeBatchPause     = 3 * time.Second
-	scrapeParallelism    = 4
-	scrapeDelay          = 1 * time.Second
-	scrapeRequestTimeout = 50 * time.Second
-	httpClientTimeout    = 50 * time.Second
-	progressLogInterval  = 100
-)
-
-type YGOCard struct {
-	ExternalID     string
-	ID             uint              `json:"id"`
-	Name           string            `json:"name"`
-	Types          string            `json:"humanReadableCardType"`
-	Description    string            `json:"desc"`
-	Archetype      string            `json:"archetype"`
-	Images         []items.CardImage `json:"card_images"`
-	Lang           items.LangCode    `json:"lang"`
-	QuantityPerSet int               `json:"quantity_per_set"`
-}
-
-type YGOSet struct {
-	SetExternalID string
-	Lang          items.LangCode
-	SetName       string
-	SetCode       string
-	SetRegionCode string
-	Description   string
-	SetType       string
-}
 
 // UniqueKey devuelve la clave de mapa para un YGOCard: "ExternalID-Lang"
 func (y YGOCard) UniqueKey() string {
@@ -66,27 +35,23 @@ func NewYGOProvider() *YGOProvider {
 	}
 }
 
-func (y *YGOProvider) FetchCards() ([]items.Item, error) {
+func (y *YGOProvider) FetchItems() ([]products.Product, error) {
 	englishCards, err := y.fetchCardsYGOPro("")
 	if err != nil {
 		return nil, err
 	}
-	return y.scrapeCards(englishCards)
+	return y.fetchAll(englishCards)
 }
 
-func (y *YGOProvider) FetchCardsByName(name string) ([]items.Item, error) {
+func (y *YGOProvider) FetchItemsByName(name string) ([]products.Product, error) {
 	englishCards, err := y.fetchCardsYGOPro(name)
 	if err != nil {
 		return nil, err
 	}
-	return y.scrapeCards(englishCards)
+	return y.fetchAll(englishCards)
 }
 
 // wikiPagePath convierte un nombre de carta en un segmento de ruta URL compatible con MediaWiki.
-// Los espacios se convierten en guiones bajos; solo ? y # se codifican en porcentaje porque
-// se interpretarían como delimitadores de cadena de consulta / fragmento. Todos los demás caracteres
-// especiales (comas, barras, signos de exclamación, etc.) se dejan tal cual porque
-// MediaWiki los maneja nativamente.
 func wikiPagePath(name string) string {
 	p := strings.ReplaceAll(name, " ", "_")
 	p = strings.ReplaceAll(p, "?", "%3F")
@@ -123,12 +88,9 @@ func createColly() *colly.Collector {
 	return c
 }
 
-// scrapeCards visita la página de Yugipedia de cada carta, analiza traducciones y entradas de impresión,
-// y devuelve la sección de elementos ensamblada. Las cartas se procesan por lotes
-// para mantener el uso de memoria acotado y dar pausas de enfriamiento entre lotes
-// para Cloudflare, reduciendo la posibilidad de ser limitado en velocidad.
-func (y *YGOProvider) scrapeCards(englishCards []YGOCard) ([]items.Item, error) {
-	log.Printf("[scrapeCards] iniciando escaneo para %d carta(s)", len(englishCards))
+// fetchAll ejecuta el pipeline unificado de scraping.
+func (y *YGOProvider) fetchAll(englishCards []YGOCard) ([]products.Product, error) {
+	log.Printf("[fetchAll] iniciando pipeline para %d carta(s)", len(englishCards))
 
 	enCardByName := make(map[string]YGOCard, len(englishCards))
 	for _, card := range englishCards {
@@ -138,220 +100,445 @@ func (y *YGOProvider) scrapeCards(englishCards []YGOCard) ([]items.Item, error) 
 	c := createColly()
 
 	var (
-		mu              sync.Mutex
-		allItems        []items.Item
-		cardsWithPrints = make(map[string]bool)
-		galleryURLs     = make(map[string]string) // ExternalID → relative gallery URL
-		processedCount  atomic.Int64
-		cfBlockCount    atomic.Int64
+		mu               sync.Mutex
+		allItems         []products.Product
+		galleryURLs      = make(map[string]string) // ExternalID → relative gallery URL
+		setURLs          = make(map[string]string) // wikiPageName → full wiki URL
+		setPageToExtID   = make(map[string]string) // wikiPageName → SetExternalID
+		failedCards      []YGOCard
+		failedCardsRetry []YGOCard
+		collectedSets    = make(map[string]*SetInfo)
+		processedCount   atomic.Int64
+		cfBlockCount     atomic.Int64
 	)
 
+	// OnError handler
 	c.OnError(func(r *colly.Response, err error) {
 		cardName := r.Request.Ctx.Get("name")
+		phase := r.Request.Ctx.Get("phase")
 		if r != nil && (r.StatusCode == http.StatusForbidden || r.StatusCode == http.StatusServiceUnavailable) {
 			blocks := cfBlockCount.Add(1)
-			log.Printf("[scrapeCards] BLOQUEO CLOUDFLARE #%d para carta %q (%s): estado %d",
-				blocks, cardName, r.Request.URL, r.StatusCode)
+			log.Printf("[fetchAll] BLOQUEO CLOUDFLARE #%d fase %s para %q (%s): estado %d",
+				blocks, phase, cardName, r.Request.URL, r.StatusCode)
 		} else {
-			log.Printf("[scrapeCards] error HTTP para carta %q (%s): %v",
-				cardName, r.Request.URL, err)
+			log.Printf("[fetchAll] error HTTP fase %s para %q (%s): %v",
+				phase, cardName, r.Request.URL, err)
 		}
 	})
 
+	// OnHTML dispatcher
 	c.OnHTML("body", func(e *colly.HTMLElement) {
-		cardName := e.Request.Ctx.Get("name")
-
-		count := processedCount.Add(1)
-		if count%progressLogInterval == 0 {
-			log.Printf("[scrapeCards] progreso: %d/%d cartas procesadas, %d elementos hasta ahora",
-				count, len(englishCards), len(allItems))
+		phase := e.Request.Ctx.Get("phase")
+		switch phase {
+		case "card", "card-retry", "card-retry-suffix":
+			y.handleCardPage(e, &mu, enCardByName, &allItems, galleryURLs, setURLs, setPageToExtID, &failedCards, &failedCardsRetry, &processedCount)
+		case "gallery":
+			y.handleGalleryPage(e, &mu, &allItems, &processedCount)
+		case "set":
+			y.handleSetPage(e, &mu, &allItems, collectedSets, setPageToExtID, &processedCount, c)
+		case "set-list":
+			y.handleSetListPage(e, &mu, &allItems)
 		}
-
-		mu.Lock()
-		enCard, ok := enCardByName[cardName]
-		mu.Unlock()
-		if !ok {
-			log.Printf("[scrapeCards] carta %q no encontrada en el mapa de búsqueda (posible redirección o discrepancia de nombre)", cardName)
-			return
-		}
-
-		translatedCards := parseCards(e, enCard)
-		translatedCards[enCard.UniqueKey()] = enCard
-
-		localItems := mapPrints(e, enCard, translatedCards)
-
-		// Extract gallery URL from the card page
-		if gURL := parseGalleryLink(e); gURL != "" {
-			mu.Lock()
-			galleryURLs[enCard.ExternalID] = gURL
-			mu.Unlock()
-		}
-
-		mu.Lock()
-		if len(localItems) > 0 {
-			cardsWithPrints[cardName] = true
-			allItems = append(allItems, localItems...)
-		} else {
-			log.Printf("[scrapeCards] ningún elemento de impresión encontrado para la carta %q — verifique las tablas CTS en %s", cardName, e.Request.URL)
-		}
-		mu.Unlock()
 	})
 
+	// Phase 1: Scrape cards by ID
+	log.Printf("[fetchAll] fase 1: scrapeo por ID para %d carta(s)", len(englishCards))
 	for i := 0; i < len(englishCards); i += scrapeBatchSize {
 		end := min(i+scrapeBatchSize, len(englishCards))
 
 		for _, card := range englishCards[i:end] {
 			ctx := colly.NewContext()
+			ctx.Put("phase", "card")
 			ctx.Put("name", card.Name)
-			id := fmt.Sprintf("%08d", card.ID)
-			wikiURL := fmt.Sprintf("%s/wiki/%s", y.yugipediaBaseUrl, id)
+			ctx.Put("id", fmt.Sprintf("%d", card.ID))
+			wikiURL := fmt.Sprintf("%s/wiki/%s", y.yugipediaBaseUrl, fmt.Sprintf("%08d", card.ID))
 			_ = c.Request("GET", wikiURL, nil, ctx, nil)
 		}
 
 		c.Wait()
 
 		if end < len(englishCards) {
-			log.Printf("[scrapeCards] lote completo: %d/%d cartas procesadas, pausando %v",
-				end, len(englishCards), scrapeBatchPause)
+			log.Printf("[fetchAll] fase 1 lote: %d/%d cartas, pausando %v", end, len(englishCards), scrapeBatchPause)
 			time.Sleep(scrapeBatchPause)
 		}
 	}
 
-	blocks := cfBlockCount.Load()
-	if blocks > 0 {
-		log.Printf("[scrapeCards] ADVERTENCIA: %d bloqueos de Cloudflare detectados durante el escaneo", blocks)
+	// Phase 2a: Retry failed cards by simple name
+	if len(failedCards) > 0 {
+		log.Printf("[fetchAll] fase 2a: reintento por nombre para %d carta(s)", len(failedCards))
+		for i := 0; i < len(failedCards); i += scrapeBatchSize {
+			end := min(i+scrapeBatchSize, len(failedCards))
+
+			for _, card := range failedCards[i:end] {
+				ctx := colly.NewContext()
+				ctx.Put("phase", "card-retry")
+				ctx.Put("name", card.Name)
+				ctx.Put("id", fmt.Sprintf("%d", card.ID))
+				wikiURL := fmt.Sprintf("%s/wiki/%s", y.yugipediaBaseUrl, url.PathEscape(card.Name))
+				_ = c.Request("GET", wikiURL, nil, ctx, nil)
+			}
+
+			c.Wait()
+
+			if end < len(failedCards) {
+				log.Printf("[fetchAll] fase 2a lote: %d/%d cartas, pausando %v", end, len(failedCards), scrapeBatchPause)
+				time.Sleep(scrapeBatchPause)
+			}
+		}
 	}
-	log.Printf("[scrapeCards] terminado — total de elementos ensamblados: %d (de %d cartas), %d galerías encontradas", len(allItems), len(englishCards), len(galleryURLs))
 
-	// Paso 3: Escanear galerías para cartas con impresiones
-	allItems = y.scrapeGallery(allItems, galleryURLs)
+	// Phase 2b: Retry with _(card) suffix
+	if len(failedCardsRetry) > 0 {
+		log.Printf("[fetchAll] fase 2b: reintento con sufijo _(card) para %d carta(s)", len(failedCardsRetry))
+		for i := 0; i < len(failedCardsRetry); i += scrapeBatchSize {
+			end := min(i+scrapeBatchSize, len(failedCardsRetry))
 
+			for _, card := range failedCardsRetry[i:end] {
+				ctx := colly.NewContext()
+				ctx.Put("phase", "card-retry-suffix")
+				ctx.Put("name", card.Name)
+				ctx.Put("id", fmt.Sprintf("%d", card.ID))
+				wikiURL := fmt.Sprintf("%s/wiki/%s_(card)", y.yugipediaBaseUrl, url.PathEscape(card.Name))
+				_ = c.Request("GET", wikiURL, nil, ctx, nil)
+			}
+
+			c.Wait()
+
+			if end < len(failedCardsRetry) {
+				log.Printf("[fetchAll] fase 2b lote: %d/%d cartas, pausando %v", end, len(failedCardsRetry), scrapeBatchPause)
+				time.Sleep(scrapeBatchPause)
+			}
+		}
+	}
+
+	// Pause before galleries
+	time.Sleep(scrapeBatchPause)
+
+	// Phase 3: Scrape galleries
+	if len(galleryURLs) > 0 {
+		log.Printf("[fetchAll] fase 3: scrapeo de galerías para %d carta(s)", len(galleryURLs))
+		galleryList := make([]struct{ externalID, galleryURL string }, 0, len(galleryURLs))
+		for extID, gURL := range galleryURLs {
+			galleryList = append(galleryList, struct{ externalID, galleryURL string }{extID, gURL})
+		}
+
+		for i := 0; i < len(galleryList); i += scrapeBatchSize {
+			end := min(i+scrapeBatchSize, len(galleryList))
+
+			for _, g := range galleryList[i:end] {
+				ctx := colly.NewContext()
+				ctx.Put("phase", "gallery")
+				ctx.Put("externalID", g.externalID)
+				galleryURL := fmt.Sprintf("%s%s", y.yugipediaBaseUrl, g.galleryURL)
+				_ = c.Request("GET", galleryURL, nil, ctx, nil)
+			}
+
+			c.Wait()
+
+			if end < len(galleryList) {
+				log.Printf("[fetchAll] fase 3 lote: %d/%d galerías, pausando %v", end, len(galleryList), scrapeBatchPause)
+				time.Sleep(scrapeBatchPause)
+			}
+		}
+	}
+
+	// Pause before sets
+	time.Sleep(scrapeBatchPause)
+
+	// Phase 4: Scrape sets
+	if len(setURLs) > 0 {
+		log.Printf("[fetchAll] fase 4: scrapeo de sets para %d set(s)", len(setURLs))
+		setList := make([]struct{ pageName, wikiURL string }, 0, len(setURLs))
+		for pageName, wikiURL := range setURLs {
+			setList = append(setList, struct{ pageName, wikiURL string }{pageName, wikiURL})
+		}
+
+		for i := 0; i < len(setList); i += scrapeBatchSize {
+			end := min(i+scrapeBatchSize, len(setList))
+
+			for _, s := range setList[i:end] {
+				ctx := colly.NewContext()
+				ctx.Put("phase", "set")
+				ctx.Put("pageName", s.pageName)
+				_ = c.Request("GET", s.wikiURL, nil, ctx, nil)
+			}
+
+			c.Wait()
+
+			if end < len(setList) {
+				log.Printf("[fetchAll] fase 4 lote: %d/%d sets, pausando %v", end, len(setList), scrapeBatchPause)
+				time.Sleep(scrapeBatchPause)
+			}
+		}
+	}
+
+	// Create set products
+	setProducts := setInfoToProducts(collectedSets)
+	allItems = append(allItems, setProducts...)
+
+	// Deduplicate
+	allItems = deduplicateProducts(allItems)
+
+	// Normalize strings
+	normalizeProducts(allItems)
+
+	// Forzar quantity=0 en set products
+	for i := range allItems {
+		if allItems[i].Type == products.ProductTypeSet {
+			allItems[i].QuantityPerSet = 0
+			allItems[i].QuantityPerBox = 0
+		}
+	}
+
+	log.Printf("[fetchAll] terminado — %d items totales (%d cartas + %d sets)", len(allItems), len(allItems)-len(setProducts), len(setProducts))
 	return allItems, nil
 }
 
-// scrapeGallery visita las páginas de Galería de Cartas para cartas que tienen impresiones y enriquece
-// los elementos con PrintURLSmall, PrintURLLarge, Edición y Código de Rareza.
-func (y *YGOProvider) scrapeGallery(allItems []items.Item, galleryURLs map[string]string) []items.Item {
-	if len(galleryURLs) == 0 {
-		return allItems
+func (y *YGOProvider) handleCardPage(e *colly.HTMLElement, mu *sync.Mutex, enCardByName map[string]YGOCard, allItems *[]products.Product, galleryURLs map[string]string, setURLs map[string]string, setPageToExtID map[string]string, failedCards *[]YGOCard, failedCardsRetry *[]YGOCard, processedCount *atomic.Int64) {
+	cardName := e.Request.Ctx.Get("name")
+	phase := e.Request.Ctx.Get("phase")
+
+	count := processedCount.Add(1)
+	if count%progressLogInterval == 0 {
+		log.Printf("[fetchAll] %s progreso: %d cartas procesadas, %d items hasta ahora", phase, count, len(*allItems))
 	}
 
-	log.Printf("[scrapeGallery] iniciando escaneo de galería para %d carta(s) con galería", len(galleryURLs))
-
-	// Construir índice de elementos: SetExternalID|Code|Lang|Rarity|Edition → *Item
-	itemIndex := make(map[string]*items.Item, len(allItems))
-	for i := range allItems {
-		key := fmt.Sprintf("%s|%s|%s|%s|%s", allItems[i].SetExternalID, allItems[i].Code, allItems[i].Lang, allItems[i].Rarity, allItems[i].Edition)
-		itemIndex[key] = &allItems[i]
+	mu.Lock()
+	enCard, ok := enCardByName[cardName]
+	mu.Unlock()
+	if !ok {
+		log.Printf("[fetchAll] carta %q no encontrada en el mapa (posible redirección)", cardName)
+		return
 	}
 
-	log.Printf("[scrapeGallery] índice de elementos construido con %d entradas", len(itemIndex))
+	translatedCards := parseCards(e, enCard)
+	translatedCards[enCard.UniqueKey()] = enCard
 
-	gc := colly.NewCollector(
-		colly.Async(true),
-		colly.UserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
-	)
-	gc.SetRequestTimeout(scrapeRequestTimeout)
-	gc.Limit(&colly.LimitRule{
-		DomainGlob:  "*",
-		Parallelism: scrapeParallelism,
-		Delay:       scrapeDelay,
-	})
-
-	setBrowserHeaders := func(r *colly.Request) {
-		r.Headers.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
-		r.Headers.Set("Accept-Language", "en-US,en;q=0.9")
-		r.Headers.Set("Cache-Control", "max-age=0")
-		r.Headers.Set("Sec-Ch-Ua", `"Not/A)Brand";v="8", "Chromium";v="125", "Google Chrome";v="125"`)
-		r.Headers.Set("Sec-Ch-Ua-Mobile", "?0")
-		r.Headers.Set("Sec-Ch-Ua-Platform", `"Linux"`)
-		r.Headers.Set("Sec-Fetch-Dest", "document")
-		r.Headers.Set("Sec-Fetch-Mode", "navigate")
-		r.Headers.Set("Sec-Fetch-Site", "none")
-		r.Headers.Set("Sec-Fetch-User", "?1")
-		r.Headers.Set("Upgrade-Insecure-Requests", "1")
-	}
-	gc.OnRequest(setBrowserHeaders)
-
-	var (
-		mu             sync.Mutex
-		processedCount atomic.Int64
-		matchedCount   atomic.Int64
-	)
-
-	gc.OnError(func(r *colly.Response, err error) {
-		externalID := r.Request.Ctx.Get("externalID")
-		if r != nil && r.StatusCode == http.StatusNotFound {
-			// La página de galería no existe, omitir silenciosamente
-			return
+	// Extract set URLs from CTS tables
+	printEntries := parseCTSTables(e)
+	for _, entry := range printEntries {
+		if entry.SetURL != "" {
+			mu.Lock()
+			setURLs[entry.SetURL] = fmt.Sprintf("%s/wiki/%s", y.yugipediaBaseUrl, url.PathEscape(entry.SetURL))
+			setPageToExtID[entry.SetURL] = entry.SetExternalID
+			mu.Unlock()
 		}
-		log.Printf("[scrapeGallery] error HTTP para carta %q (%s): %v",
-			externalID, r.Request.URL, err)
-	})
+	}
 
-	gc.OnHTML("body", func(e *colly.HTMLElement) {
-		count := processedCount.Add(1)
-		if count%progressLogInterval == 0 {
-			log.Printf("[scrapeGallery] progreso: %d/%d galerías procesadas, %d coincidencias hasta ahora",
-				count, len(galleryURLs), matchedCount.Load())
-		}
+	localItems := mapPrints(e, enCard, translatedCards)
 
-		entries := parseGallery(e)
-
+	// Extract gallery URL
+	if gURL := parseGalleryLink(e); gURL != "" {
 		mu.Lock()
-		for _, entry := range entries {
-			// Intentar coincidencia exacta con Edition primero
-			key := fmt.Sprintf("%s|%s|%s|%s|%s", entry.Set, entry.Code, entry.Lang, entry.Rarity, entry.Edition)
-			item, ok := itemIndex[key]
-			if !ok {
-				// Fallback: coincidir sin Edition (para elementos de CTS que nunca tienen Edition)
-				fallbackKey := fmt.Sprintf("%s|%s|%s|%s|", entry.Set, entry.Code, entry.Lang, entry.Rarity)
-				item, ok = itemIndex[fallbackKey]
-			}
-			if ok {
-				item.PrintURLSmall = entry.PrintURLSmall
-				item.PrintURLLarge = entry.PrintURLLarge
-				item.Edition = entry.Edition
-				item.RarityCode = entry.RarityCode
-				matchedCount.Add(1)
-			} else {
-				log.Printf("[scrapeGallery] ninguna coincidencia para la entrada de galería: Set=%q Código=%q Lang=%s Rareza=%q Edición=%q", entry.Set, entry.Code, entry.Lang, entry.Rarity, entry.Edition)
-			}
-		}
+		galleryURLs[enCard.ExternalID] = gURL
 		mu.Unlock()
-	})
-
-	// Convertir mapa a slice para procesamiento por lotes
-	type galleryEntry struct {
-		externalID string
-		galleryURL string
-	}
-	var galleries []galleryEntry
-	for externalID, gURL := range galleryURLs {
-		galleries = append(galleries, galleryEntry{externalID: externalID, galleryURL: gURL})
 	}
 
-	for i := 0; i < len(galleries); i += scrapeBatchSize {
-		end := min(i+scrapeBatchSize, len(galleries))
-
-		for _, g := range galleries[i:end] {
-			ctx := colly.NewContext()
-			ctx.Put("externalID", g.externalID)
-			galleryURL := fmt.Sprintf("%s%s", y.yugipediaBaseUrl, g.galleryURL)
-			_ = gc.Request("GET", galleryURL, nil, ctx, nil)
-		}
-
-		gc.Wait()
-
-		if end < len(galleries) {
-			log.Printf("[scrapeGallery] pausa de lote: %d/%d galerías realizadas, pausando %v",
-				end, len(galleries), scrapeBatchPause)
-			time.Sleep(scrapeBatchPause)
+	mu.Lock()
+	if len(localItems) > 0 {
+		*allItems = append(*allItems, localItems...)
+	} else {
+		switch phase {
+		case "card":
+			*failedCards = append(*failedCards, enCard)
+		case "card-retry":
+			*failedCardsRetry = append(*failedCardsRetry, enCard)
+		case "card-retry-suffix":
+			log.Printf("[fetchAll] carta %q no encontrada después de todos los intentos", cardName)
 		}
 	}
+	mu.Unlock()
+}
 
-	log.Printf("[scrapeGallery] terminado — coincidieron %d entradas de galería con elementos", matchedCount.Load())
-	return allItems
+func (y *YGOProvider) handleGalleryPage(e *colly.HTMLElement, mu *sync.Mutex, allItems *[]products.Product, processedCount *atomic.Int64) {
+	count := processedCount.Add(1)
+	if count%progressLogInterval == 0 {
+		log.Printf("[fetchAll] gallery progreso: %d galerías procesadas", count)
+	}
+
+	entries := parseGallery(e)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Build item index
+	itemIndex := make(map[string]*products.Product, len(*allItems))
+	for i := range *allItems {
+		if (*allItems)[i].Type == products.ProductTypeCard {
+			key := fmt.Sprintf("%s|%s|%s|%s|%s", (*allItems)[i].SetExternalID, (*allItems)[i].Code, (*allItems)[i].Lang, (*allItems)[i].Rarity, (*allItems)[i].Edition)
+			itemIndex[key] = &(*allItems)[i]
+		}
+	}
+
+	for _, entry := range entries {
+		key := fmt.Sprintf("%s|%s|%s|%s|%s", entry.Set, entry.Code, entry.Lang, entry.Rarity, entry.Edition)
+		item, ok := itemIndex[key]
+		if !ok {
+			fallbackKey := fmt.Sprintf("%s|%s|%s|%s|", entry.Set, entry.Code, entry.Lang, entry.Rarity)
+			item, ok = itemIndex[fallbackKey]
+		}
+		if ok {
+			item.PrintURLSmall = entry.PrintURLSmall
+			item.PrintURLLarge = entry.PrintURLLarge
+			item.Edition = entry.Edition
+			item.RarityCode = entry.RarityCode
+		}
+	}
+}
+
+func hasRarityMatch(itemRarity string, entryRarities []string) bool {
+	if len(entryRarities) == 0 {
+		return true
+	}
+	normItem := strings.ToLower(strings.TrimSpace(itemRarity))
+	for _, er := range entryRarities {
+		normEntry := strings.ToLower(strings.TrimSpace(er))
+		if normItem == normEntry {
+			return true
+		}
+		if normItem != "" && normEntry != "" && (strings.Contains(normItem, normEntry) || strings.Contains(normEntry, normItem)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (y *YGOProvider) handleSetPage(e *colly.HTMLElement, mu *sync.Mutex, allItems *[]products.Product, collectedSets map[string]*SetInfo, setPageToExtID map[string]string, processedCount *atomic.Int64, c *colly.Collector) {
+	pageName := e.Request.Ctx.Get("pageName")
+	count := processedCount.Add(1)
+	if count%progressLogInterval == 0 {
+		log.Printf("[fetchAll] set progreso: %d sets procesados", count)
+	}
+
+	setInfo := parseSetPage(e)
+	// Usar el SetExternalID del CTS (más completo, incluye sufijos como "(All-Foil Edition)")
+	if setExternalID := setPageToExtID[pageName]; setExternalID != "" {
+		setInfo.ExternalID = setExternalID
+	} else if setInfo.ExternalID == "" {
+		setInfo.ExternalID = pageName
+	}
+
+	mu.Lock()
+	collectedSets[pageName] = setInfo
+
+	// Build set index for enrichment
+	setIndex := make(map[string][]*products.Product)
+	for i := range *allItems {
+		if (*allItems)[i].Type == products.ProductTypeCard && (*allItems)[i].SetExternalID != "" {
+			setIndex[(*allItems)[i].SetExternalID] = append(setIndex[(*allItems)[i].SetExternalID], &(*allItems)[i])
+		}
+	}
+
+	// Get the SetExternalID for this wiki page
+	setExternalID := setPageToExtID[pageName]
+	if setExternalID == "" {
+		setExternalID = pageName
+	}
+
+	// Enrich existing items with set metadata
+	for _, item := range setIndex[setExternalID] {
+		item.SetType = setInfo.SetType
+		if setInfo.SetImage != "" && item.SetImage == "" {
+			item.SetImage = setInfo.SetImage
+		}
+	}
+
+	// Enrich QuantityPerSet from the inline card list entries (already parsed from tabs)
+	for lang, entries := range setInfo.CardEntries {
+		for _, item := range setIndex[setExternalID] {
+			if item.Lang != lang {
+				continue
+			}
+			for _, entry := range entries {
+				if item.Code == entry.CardCode && hasRarityMatch(item.Rarity, entry.Rarities) {
+					if entry.IsBonus {
+						item.QuantityPerSet = 0
+					} else if entry.Quantity > 0 {
+						item.QuantityPerSet = entry.Quantity
+					} else {
+						item.QuantityPerSet = 1
+					}
+				}
+			}
+		}
+	}
+
+	// Queue AJAX tabs if any
+	for lang, pageName := range setInfo.AjaxTabs {
+		hasLang := false
+		for _, item := range setIndex[setExternalID] {
+			if item.Lang == lang {
+				hasLang = true
+				break
+			}
+		}
+		if !hasLang {
+			continue
+		}
+
+		ctx := colly.NewContext()
+		ctx.Put("phase", "set-list")
+		ctx.Put("setExternalID", setExternalID)
+		ctx.Put("lang", string(lang))
+
+		ajaxURL := setCardsURL(y.yugipediaBaseUrl, pageName)
+		_ = c.Request("GET", ajaxURL, nil, ctx, nil)
+	}
+
+	mu.Unlock()
+}
+
+func (y *YGOProvider) handleSetListPage(e *colly.HTMLElement, mu *sync.Mutex, allItems *[]products.Product) {
+	setExternalID := e.Request.Ctx.Get("setExternalID")
+	langStr := e.Request.Ctx.Get("lang")
+	lang := products.LangCode(langStr)
+
+	entries := parseSetCardListFromSelection(e.DOM, lang)
+	if len(entries) == 0 {
+		return
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Build set index for enrichment
+	setIndex := make(map[string][]*products.Product)
+	for i := range *allItems {
+		if (*allItems)[i].Type == products.ProductTypeCard && (*allItems)[i].SetExternalID == setExternalID && (*allItems)[i].Lang == lang {
+			setIndex[setExternalID] = append(setIndex[setExternalID], &(*allItems)[i])
+		}
+	}
+
+	// Enrich QuantityPerSet from the parsed card list entries
+	for _, item := range setIndex[setExternalID] {
+		for _, entry := range entries {
+			if item.Code == entry.CardCode && hasRarityMatch(item.Rarity, entry.Rarities) {
+				if entry.IsBonus {
+					item.QuantityPerSet = 0
+				} else if entry.Quantity > 0 {
+					item.QuantityPerSet = entry.Quantity
+				} else {
+					item.QuantityPerSet = 1
+				}
+			}
+		}
+	}
+}
+
+// deduplicateProducts removes duplicate products by UniqueKey, keeping the last occurrence.
+func deduplicateProducts(items []products.Product) []products.Product {
+	seen := make(map[products.ProductUniqueKey]int, len(items))
+	for i, item := range items {
+		seen[item.UniqueKey()] = i
+	}
+
+	result := make([]products.Product, 0, len(seen))
+	for i, item := range items {
+		if idx, ok := seen[item.UniqueKey()]; ok && idx == i {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 // fetchCardsYGOPro llama a la API de YGOPRODeck y devuelve las cartas en inglés.
@@ -390,189 +577,11 @@ func (y *YGOProvider) fetchCardsYGOPro(name string) ([]YGOCard, error) {
 
 	cards := make([]YGOCard, 0, len(response.Data))
 	for _, card := range response.Data {
+		card.Name = html.UnescapeString(card.Name)
 		card.ExternalID = card.Name
-		card.Lang = items.EN
+		card.Lang = products.EN
 		card.Types = strings.ReplaceAll(card.Types, " ", "/")
 		cards = append(cards, card)
 	}
 	return cards, nil
-}
-
-// FetchSets escanea páginas de conjuntos para enriquecer elementos existentes con información del set.
-func (y *YGOProvider) FetchSets(existingItems []items.Item) ([]items.Item, error) {
-	log.Printf("[FetchSets] iniciando escaneo de conjuntos con %d elementos existentes", len(existingItems))
-
-	// 1. Construir índice de conjuntos a partir de elementos existentes (map setExternalID -> items)
-	setIndex := make(map[string][]*items.Item)
-	for i := range existingItems {
-		if existingItems[i].Type == items.ItemTypeCard && existingItems[i].SetExternalID != "" {
-			setIndex[existingItems[i].SetExternalID] = append(setIndex[existingItems[i].SetExternalID], &existingItems[i])
-		}
-	}
-
-	setNames := make([]string, 0, len(setIndex))
-	for name := range setIndex {
-		setNames = append(setNames, name)
-	}
-
-	log.Printf("[FetchSets] encontrados %d conjuntos únicos para escanear", len(setNames))
-
-	// 2. Escanear páginas principales de conjuntos
-	sc := colly.NewCollector(
-		colly.Async(true),
-		colly.UserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
-	)
-	sc.SetRequestTimeout(scrapeRequestTimeout)
-	sc.Limit(&colly.LimitRule{
-		DomainGlob:  "*",
-		Parallelism: scrapeParallelism,
-		Delay:       scrapeDelay,
-	})
-
-	setBrowserHeaders := func(r *colly.Request) {
-		r.Headers.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
-		r.Headers.Set("Accept-Language", "en-US,en;q=0.9")
-		r.Headers.Set("Cache-Control", "max-age=0")
-		r.Headers.Set("Sec-Ch-Ua", `"Not/A)Brand";v="8", "Chromium";v="125", "Google Chrome";v="125"`)
-		r.Headers.Set("Sec-Ch-Ua-Mobile", "?0")
-		r.Headers.Set("Sec-Ch-Ua-Platform", `"Linux"`)
-		r.Headers.Set("Sec-Fetch-Dest", "document")
-		r.Headers.Set("Sec-Fetch-Mode", "navigate")
-		r.Headers.Set("Sec-Fetch-Site", "none")
-		r.Headers.Set("Sec-Fetch-User", "?1")
-		r.Headers.Set("Upgrade-Insecure-Requests", "1")
-	}
-	sc.OnRequest(setBrowserHeaders)
-
-	var (
-		mu             sync.Mutex
-		allItems       []items.Item
-		processedCount atomic.Int64
-	)
-
-	// Escanear páginas de lista de cartas para cada idioma
-	lc := colly.NewCollector(
-		colly.Async(true),
-		colly.UserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
-	)
-	lc.SetRequestTimeout(scrapeRequestTimeout)
-	lc.Limit(&colly.LimitRule{
-		DomainGlob:  "*",
-		Parallelism: scrapeParallelism,
-		Delay:       scrapeDelay,
-	})
-	lc.OnRequest(setBrowserHeaders)
-
-	lc.OnError(func(r *colly.Response, err error) {
-		setName := r.Request.Ctx.Get("setName")
-		log.Printf("[FetchSets] [lista] error HTTP para conjunto %q lang %q (%s): %v",
-			setName, r.Request.Ctx.Get("lang"), r.Request.URL, err)
-	})
-
-	lc.OnHTML("body", func(e *colly.HTMLElement) {
-		setName := e.Request.Ctx.Get("setName")
-		langStr := e.Request.Ctx.Get("lang")
-		lang := items.LangCode(langStr)
-
-		entries := parseSetCardListWithBonuses(e, lang)
-
-		mu.Lock()
-		cardsForSet := setIndex[setName]
-		mu.Unlock()
-
-		for _, entry := range entries {
-			for _, item := range cardsForSet {
-				if item.SetCode == entry.CardCode && item.Lang == lang {
-					item.QuantityPerSet = entry.Quantity
-				}
-			}
-		}
-	})
-
-	sc.OnError(func(r *colly.Response, err error) {
-		cardName := r.Request.Ctx.Get("name")
-		if r != nil && r.StatusCode == http.StatusNotFound {
-			log.Printf("[FetchSets] página de conjunto no encontrada: %q (%s)", cardName, r.Request.URL)
-			return
-		}
-		log.Printf("[FetchSets] error HTTP para conjunto %q (%s): %v",
-			cardName, r.Request.URL, err)
-	})
-
-	sc.OnHTML("body", func(e *colly.HTMLElement) {
-		setName := e.Request.Ctx.Get("name")
-		count := processedCount.Add(1)
-		if count%progressLogInterval == 0 {
-			log.Printf("[FetchSets] progreso: %d/%d conjuntos procesados", count, len(setNames))
-		}
-
-		// Analizar página principal del conjunto
-		setInfo := parseSetPage(e)
-		if setInfo.ExternalID == "" {
-			setInfo.ExternalID = setName
-		}
-
-		mu.Lock()
-		cardsForSet := setIndex[setName]
-		mu.Unlock()
-
-		if len(cardsForSet) == 0 {
-			return
-		}
-
-		// Procesar las pestañas de lista de cartas de cada idioma
-		for lang, pageName := range setInfo.CardListPages {
-			// Omitir si no hay elementos para este idioma
-			hasLang := false
-			for _, item := range cardsForSet {
-				if item.Lang == lang {
-					hasLang = true
-					break
-				}
-			}
-			if !hasLang {
-				continue
-			}
-
-			listURL := setCardsURL(y.yugipediaBaseUrl, pageName)
-			listCtx := colly.NewContext()
-			listCtx.Put("setName", setName)
-			listCtx.Put("lang", string(lang))
-			_ = lc.Request("GET", listURL, nil, listCtx, nil)
-		}
-
-		// Enriquecer elementos existentes con información del conjunto
-		for _, item := range cardsForSet {
-			item.SetType = setInfo.SetType
-			item.QuantityPerBox = setInfo.QuantityPerBox
-			if setInfo.SetImage != "" && item.SetImage == "" {
-				item.SetImage = setInfo.SetImage
-			}
-		}
-	})
-
-	// 3. Escanear páginas principales de conjuntos en lotes
-	for i := 0; i < len(setNames); i += scrapeBatchSize {
-		end := min(i+scrapeBatchSize, len(setNames))
-
-		for _, name := range setNames[i:end] {
-			ctx := colly.NewContext()
-			ctx.Put("name", name)
-			wikiURL := fmt.Sprintf("%s/wiki/%s", y.yugipediaBaseUrl, wikiPagePath(name))
-			_ = sc.Request("GET", wikiURL, nil, ctx, nil)
-		}
-
-		sc.Wait()
-
-		if end < len(setNames) {
-			log.Printf("[FetchSets] pausa de lote: %d/%d conjuntos realizados, pausando %v",
-				end, len(setNames), scrapeBatchPause)
-			time.Sleep(scrapeBatchPause)
-		}
-	}
-
-	lc.Wait()
-
-	log.Printf("[FetchSets] terminado — enriquecidos %d elementos con datos de conjunto", len(allItems))
-	return existingItems, nil
 }

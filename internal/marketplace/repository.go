@@ -1,0 +1,127 @@
+package marketplace
+
+import (
+	"github.com/operaodev/cardex/internal/stock"
+	"gorm.io/gorm"
+)
+
+type Repository interface {
+	GetPrices(id uint64) (MarketAnalysis, error)
+	GetOffers(input OffersInput) (OffersPage, error)
+}
+
+type repository struct {
+	db *gorm.DB
+}
+
+func NewRepository(db *gorm.DB) Repository {
+	return &repository{
+		db: db,
+	}
+}
+
+func (r *repository) GetPrices(id uint64) (MarketAnalysis, error) {
+	var analysis MarketAnalysis
+
+	result := r.db.Table("stocks").
+		Select(`
+			COALESCE(MIN(price), 0) AS low_price,
+			COALESCE(AVG(price), 0) AS average_price,
+			COALESCE(MAX(price), 0) AS high_price,
+			COALESCE(SUM(quantity), 0) AS market_stocks
+		`).
+		Where("product_id = ?", id).
+		Where("is_for_sale = ?", true).
+		Scan(&analysis)
+
+	if result.Error != nil {
+		return MarketAnalysis{}, result.Error
+	}
+
+	analysis.ProductId = id
+
+	return analysis, nil
+}
+
+func (r *repository) GetOffers(input OffersInput) (OffersPage, error) {
+	var page OffersPage
+	if input.Limit <= 0 {
+		input.Limit = 20
+	}
+	if input.Limit > 100 {
+		input.Limit = 100
+	}
+	if input.Page <= 0 {
+		input.Page = 1
+	}
+
+	offset := (input.Page - 1) * input.Limit
+
+	// Count total
+	query := r.db.Table("stocks").
+		Where("product_id = ?", input.ProductID).
+		Where("is_for_sale = ? OR is_for_trade = ?", true, true)
+	if input.ForSale != nil {
+		query = query.Where("is_for_sale = ?", *input.ForSale)
+	}
+	if input.ForTrade != nil {
+		query = query.Where("is_for_trade = ?", *input.ForTrade)
+	}
+	if input.HasStock != nil && *input.HasStock {
+		query = query.Where("quantity > 0")
+	}
+
+	query.Count(&page.Total)
+
+	// Fetch page
+	var stocks []stock.Stock
+	order := "price ASC"
+	if input.SortDesc {
+		order = "price DESC"
+	}
+
+	findQuery := r.db.Preload("User").
+		Table("stocks").
+		Where("product_id = ?", input.ProductID).
+		Where("is_for_sale = ? OR is_for_trade = ?", true, true)
+	if input.ForSale != nil {
+		findQuery = findQuery.Where("is_for_sale = ?", *input.ForSale)
+	}
+	if input.ForTrade != nil {
+		findQuery = findQuery.Where("is_for_trade = ?", *input.ForTrade)
+	}
+	if input.HasStock != nil {
+		if *input.HasStock {
+			findQuery = findQuery.Where("quantity > 0")
+		} else {
+			findQuery = findQuery.Where("quantity <= 0")
+		}
+	}
+
+	result := findQuery.Order(order).Offset(offset).Limit(input.Limit).Find(&stocks)
+
+	if result.Error != nil {
+		return page, result.Error
+	}
+
+	offers := make([]Offer, 0, len(stocks))
+	for _, s := range stocks {
+		offers = append(offers, Offer{
+			User:          s.User,
+			StockID:       s.ID,
+			Condition:     s.Condition,
+			IsForTrade:    s.IsForTrade,
+			Price:         s.Price.InexactFloat64(),
+			DiscountPrice: s.DiscountPrice.InexactFloat64(),
+			Discount:      s.DiscountPercentage().InexactFloat64(),
+			Quantity:      uint(s.Quantity),
+		})
+	}
+
+	page.Items = offers
+	page.Page = input.Page
+	page.Limit = input.Limit
+	page.TotalPages = int((page.Total + int64(input.Limit) - 1) / int64(input.Limit))
+
+	return page, nil
+}

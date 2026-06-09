@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/operaodev/cardex/internal/items"
+	"github.com/operaodev/cardex/internal/products"
 	"github.com/operaodev/cardex/internal/providers"
 )
 
@@ -21,7 +21,7 @@ func NewProviderHandler(svc *providers.Service) *ProviderHandler {
 func (h *ProviderHandler) FetchCards(c *gin.Context) {
 	provider := c.Param("provider")
 
-	result, err := h.svc.FetchCards(items.TCG(provider))
+	result, err := h.svc.FetchItems(products.TCG(provider))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -34,7 +34,7 @@ func (h *ProviderHandler) FetchCardsByName(c *gin.Context) {
 	provider := c.Param("provider")
 	name := c.Param("name")
 
-	result, err := h.svc.FetchCardsByName(items.TCG(provider), name)
+	result, err := h.svc.FetchItemsByName(products.TCG(provider), name)
 	if err != nil {
 		c.JSON(
 			http.StatusInternalServerError,
@@ -44,7 +44,7 @@ func (h *ProviderHandler) FetchCardsByName(c *gin.Context) {
 	}
 
 	if result == nil {
-		result = []items.Item{}
+		result = []products.Product{}
 	}
 
 	c.JSON(http.StatusOK, result)

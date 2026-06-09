@@ -1,11 +1,10 @@
 package providers
 
 import (
-	"github.com/operaodev/cardex/internal/items"
+	"github.com/operaodev/cardex/internal/products"
 )
 
 type Provider interface {
-	FetchSets(cards []items.Item) ([]items.Item, error)
-	FetchCards() ([]items.Item, error)
-	FetchCardsByName(name string) ([]items.Item, error)
+	FetchItems() ([]products.Product, error)
+	FetchItemsByName(name string) ([]products.Product, error)
 }

@@ -7,7 +7,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/operaodev/cardex/internal/database"
-	"github.com/operaodev/cardex/internal/items"
+	"github.com/operaodev/cardex/internal/products"
 	"github.com/operaodev/cardex/internal/providers"
 	syncsvc "github.com/operaodev/cardex/internal/sync"
 )
@@ -28,7 +28,7 @@ func main() {
 	database.Connect()
 
 	// Capas de la aplicación
-	itemsRepo := items.NewRepository(database.DB)
+	itemsRepo := products.NewRepository(database.DB)
 	ygoProv := providers.NewYGOProvider()
 	providerSvc := providers.NewService(ygoProv)
 	svc := syncsvc.NewSyncService(providerSvc, itemsRepo)
@@ -36,7 +36,7 @@ func main() {
 	var n int
 	var err error
 
-	tcgEnum := items.TCG(*tcg)
+	tcgEnum := products.TCG(*tcg)
 
 	if *name != "" {
 		log.Printf("[sync] Iniciando sincronización manual por nombre para TCG=%s, Name=%s", *tcg, *name)

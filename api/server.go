@@ -5,25 +5,35 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/operaodev/cardex/api/handler"
+	"github.com/operaodev/cardex/api/middleware"
+	"github.com/operaodev/cardex/internal/stock"
 )
 
 type Server struct {
-	router           *gin.Engine
-	providersHandler *handler.ProviderHandler
-	cardsHandler     *handler.CardsHandler
-	usersHandler     *handler.UsersHandler
-	inventoryHandler *handler.InventoryHandler
-	syncHandler      *handler.SyncHandler
-	itemsHandler     *handler.ItemsHandler
+	router             *gin.Engine
+	providersHandler   *handler.ProviderHandler
+	cardsHandler       *handler.CardsHandler
+	usersHandler       *handler.UsersHandler
+	syncHandler        *handler.SyncHandler
+	productsHandler    *handler.ProductsHandler
+	stockHandler       *handler.StockHandler
+	marketplaceHandler *handler.MarketplaceHandler
+	wishlistHandler    *handler.WishlistHandler
+	stockRepo          stock.Repository
+	jwtSecret          string
 }
 
 func NewServer(
 	providersH *handler.ProviderHandler,
 	cardsH *handler.CardsHandler,
 	usersH *handler.UsersHandler,
-	inventoryH *handler.InventoryHandler,
 	syncH *handler.SyncHandler,
-	itemsH *handler.ItemsHandler,
+	productsH *handler.ProductsHandler,
+	stockH *handler.StockHandler,
+	marketplaceH *handler.MarketplaceHandler,
+	wishlistH *handler.WishlistHandler,
+	stockRepo stock.Repository,
+	jwtSecret string,
 ) *Server {
 	router := gin.Default()
 
@@ -43,13 +53,17 @@ func NewServer(
 	})
 
 	s := &Server{
-		router:           router,
-		providersHandler: providersH,
-		cardsHandler:     cardsH,
-		usersHandler:     usersH,
-		inventoryHandler: inventoryH,
-		syncHandler:      syncH,
-		itemsHandler:     itemsH,
+		router:             router,
+		providersHandler:   providersH,
+		cardsHandler:       cardsH,
+		usersHandler:       usersH,
+		syncHandler:        syncH,
+		productsHandler:    productsH,
+		stockHandler:       stockH,
+		marketplaceHandler: marketplaceH,
+		wishlistHandler:    wishlistH,
+		stockRepo:          stockRepo,
+		jwtSecret:          jwtSecret,
 	}
 	s.setupRoutes()
 	return s
@@ -95,36 +109,78 @@ func (s *Server) setupRoutes() {
 		usersGroup.POST("/register", s.usersHandler.Register)
 		// POST /users/login
 		usersGroup.POST("/login", s.usersHandler.Login)
+		// GET /users/verify?token=...
+		usersGroup.GET("/verify", s.usersHandler.VerifyEmail)
+		// GET /users/me (requiere auth)
+		usersGroup.GET("/me", middleware.AuthMiddleware(s.jwtSecret), s.usersHandler.GetMe)
 	}
 
-	// Rutas de ítems
-	itemsGroup := s.router.Group("/items")
+	// Rutas de products
+	productsGroup := s.router.Group("/products")
 	{
 		// Las rutas fijas deben ir antes del comodín :id
-		// POST /items/suggestions
-		itemsGroup.POST("/suggestions", s.itemsHandler.FindSuggestions)
-		// GET /items/random/:count
-		itemsGroup.GET("/random/:count", s.itemsHandler.GetRandomNames)
-		// GET /items/:id
-		itemsGroup.GET("/:id", s.itemsHandler.GetByID)
+		// POST /products/suggestions
+		productsGroup.POST("/suggestions", s.productsHandler.FindSuggestions)
+		// GET /products/random/:count
+		productsGroup.GET("/random/:count", s.productsHandler.GetRandomNames)
+		// POST /products/related
+		productsGroup.POST("/related", s.productsHandler.GetRelatedCards)
+		// GET /products/:id
+		productsGroup.GET("/:id", s.productsHandler.GetByID)
 	}
 
-	invGroup := s.router.Group("/inventory")
+	stockGroup := s.router.Group("/stock")
+	auth := middleware.AuthMiddleware(s.jwtSecret)
+	ownership := middleware.RequireStockOwnership(s.stockRepo)
 	{
-		// GET /inventory/:user_id
-		invGroup.GET("/:user_id", s.inventoryHandler.GetInventory)
-		// GET /inventory/logs/:inventory_id
-		invGroup.GET("/logs/:inventory_id", s.inventoryHandler.GetLogs)
-		// POST /inventory/restock
-		invGroup.POST("/restock", s.inventoryHandler.Restock)
-		// POST /inventory/sell
-		invGroup.POST("/sell", s.inventoryHandler.Sell)
-		// POST /inventory/loss
-		invGroup.POST("/loss", s.inventoryHandler.RegisterLoss)
-		// POST /inventory/return
-		invGroup.POST("/return", s.inventoryHandler.RegisterReturn)
-		// POST /inventory/price
-		invGroup.POST("/price", s.inventoryHandler.ChangePrice)
+		// GET /stock/me — stock del usuario autenticado
+		stockGroup.GET("/me", auth, s.stockHandler.GetMyStock)
+		// GET /stock/:user_id
+		stockGroup.GET("/:user_id", auth, s.stockHandler.GetByUserID)
+		// GET /stock/id/:id — requiere ownership
+		stockGroup.GET("/id/:id", auth, ownership, s.stockHandler.GetByID)
+		// GET /stock/logs/:stock_id — requiere ownership
+		stockGroup.GET("/logs/:stock_id", auth, ownership, s.stockHandler.GetLogs)
+		// POST /stock
+		stockGroup.POST("", auth, s.stockHandler.Create)
+		// POST /stock/restock
+		stockGroup.POST("/restock", auth, s.stockHandler.Restock)
+		// POST /stock/return
+		stockGroup.POST("/return", auth, s.stockHandler.Return)
+		// POST /stock/sale
+		stockGroup.POST("/sale", auth, s.stockHandler.Sale)
+		// POST /stock/trade
+		stockGroup.POST("/trade", auth, s.stockHandler.Trade)
+		// POST /stock/gift
+		stockGroup.POST("/gift", auth, s.stockHandler.Gift)
+		// POST /stock/lost
+		stockGroup.POST("/lost", auth, s.stockHandler.Lost)
+		// POST /stock/damage
+		stockGroup.POST("/damage", auth, s.stockHandler.Damage)
+		// POST /stock/adjust
+		stockGroup.POST("/adjust", auth, s.stockHandler.Adjust)
+		// POST /stock/rollback
+		stockGroup.POST("/rollback", auth, s.stockHandler.Rollback)
+	}
+
+	// Marketplace analysis
+	marketplaceGroup := s.router.Group("/marketplace")
+	{
+		// GET /marketplace/analysis/:id
+		marketplaceGroup.GET("/analysis/:id", s.marketplaceHandler.GetPrices)
+		// GET /marketplace/offers/:id
+		marketplaceGroup.GET("/offers/:id", s.marketplaceHandler.GetOffers)
+	}
+
+	// Wishlist (custom packs)
+	wishlistGroup := s.router.Group("/wishlist")
+	{
+		// GET /wishlist
+		wishlistGroup.GET("", auth, s.wishlistHandler.GetMyWishlist)
+		// POST /wishlist
+		wishlistGroup.POST("", auth, s.wishlistHandler.Upsert)
+		// DELETE /wishlist/:product_id
+		wishlistGroup.DELETE("/:product_id", auth, s.wishlistHandler.Delete)
 	}
 }
 

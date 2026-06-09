@@ -2,83 +2,83 @@ package providers
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/gocolly/colly"
-	"github.com/operaodev/cardex/internal/items"
+	"github.com/operaodev/cardex/internal/products"
 )
 
 type SetInfo struct {
-	ExternalID     string
-	SetType        string // "Structure Deck", "Booster Pack", "Collector's Set", etc.
-	Medium         string // "TCG", "OCG", "TCG/OCG"
-	Names          map[items.LangCode]string
-	Prefixes       map[items.LangCode]string
-	QuantityPerSet uint
-	QuantityPerBox uint
-	SetImage       string
-	CardListPages  map[items.LangCode]string // lang -> URL path
+	ExternalID   string
+	SetType      string // "Structure Deck", "Booster Pack", "Collector's Set", etc.
+	Names        map[products.LangCode]string
+	Prefixes     map[products.LangCode]string
+	SetImage     string
+	CardEntries  map[products.LangCode][]SetCardEntry // lang -> parsed card entries from inline tabs
+	AjaxTabs     map[products.LangCode]string         // lang -> page name for AJAX tab
 }
 
 type SetCardEntry struct {
 	CardCode string
 	CardName string
 	Rarity   string
+	Rarities []string
 	Quantity uint
 	Category string
 	Print    string // "New", "Reprint", etc.
 	IsBonus  bool
-	Lang     items.LangCode
+	Lang     products.LangCode
 }
-
-var (
-	rePackPerBox    = regexp.MustCompile(`(\d+)\s+(?:cards?\s+)?per\s+pack`)
-	reBoxPerBox     = regexp.MustCompile(`(\d+)\s+packs?\s+per\s+box`)
-	rePreconstructedDeck = regexp.MustCompile(`Preconstructed\s+Deck\s+of\s+(\d+)\s+cards?`)
-	reDeckCount     = regexp.MustCompile(`(\d+)\s+Decks?\s+(?:of|with)\s+(\d+)\s+cards?`)
-	reTotalCards    = regexp.MustCompile(`(?:contains?|contains)\s+(\d+)\s+cards?`)
-)
 
 func parseSetPage(e *colly.HTMLElement) *SetInfo {
 	set := &SetInfo{
-		Names:         make(map[items.LangCode]string),
-		Prefixes:      make(map[items.LangCode]string),
-		CardListPages: make(map[items.LangCode]string),
+		Names:       make(map[products.LangCode]string),
+		Prefixes:    make(map[products.LangCode]string),
+		CardEntries: make(map[products.LangCode][]SetCardEntry),
+		AjaxTabs:    make(map[products.LangCode]string),
 	}
 
 	set.ExternalID = strings.TrimSpace(e.DOM.Find("th.infobox-above").First().Text())
 
+	currentSection := ""
 	e.DOM.Find("table.infobox tr").Each(func(_ int, row *goquery.Selection) {
+		// Detect section headers
+		header := row.Find("th.infobox-header")
+		if header.Length() > 0 {
+			currentSection = strings.TrimSpace(header.Text())
+			return
+		}
+
 		label := strings.TrimSpace(row.Find("th.infobox-label").Text())
 		data := row.Find("td.infobox-data")
 
-		switch label {
-		case "Medium":
-			set.Medium = strings.TrimSpace(data.Text())
-		case "Type":
+		if label == "Type" {
 			set.SetType = strings.TrimSpace(data.Find("li").First().Text())
 			if set.SetType == "" {
 				set.SetType = strings.TrimSpace(data.Text())
 			}
-		case "Number of cards":
-			text := data.Text()
-			if num := extractNumber(text); num > 0 {
-				set.QuantityPerSet = num
+		}
+			
+		// Names only in the "Names" section
+		if currentSection == "Names" {
+			lang := langFromInfoboxLabel(label)
+			if lang != "" {
+				nameText := strings.TrimSpace(data.Text())
+				// Remove <span lang> wrapper text
+				spanText := strings.TrimSpace(data.Find("span").First().Text())
+				if spanText != "" {
+					nameText = spanText
+				}
+				set.Names[lang] = nameText
 			}
 		}
 
-		// Names
-		lang := langFromInfoboxLabel(label)
-		if lang != "" {
-			nameText := strings.TrimSpace(data.Text())
-			set.Names[lang] = nameText
-		}
-
-		// Prefixes
-		if label == "Prefix" {
+		// Prefixes only in "Set information" section
+		if currentSection == "Set information" && label == "Prefix" {
 			data.Find("li").Each(func(_ int, li *goquery.Selection) {
 				text := li.Text()
 				langCode, prefix := parsePrefix(text)
@@ -95,68 +95,18 @@ func parseSetPage(e *colly.HTMLElement) *SetInfo {
 	// Parse galleries
 	set.parseGalleryLinks(e)
 
-	// Parse card list tabs
-	set.parseCardListTabs(e)
+	// Parse card list tabs only if set type contains "deck" or "set" (case-insensitive)
+	sType := strings.ToLower(set.SetType)
+	if strings.Contains(sType, "deck") || strings.Contains(sType, "set") {
+		set.parseCardListTabs(e)
+	}
 
 	return set
 }
 
 func (s *SetInfo) parseBreakdown(e *colly.HTMLElement) {
-	var breakdownText string
-
-	e.DOM.Find("h2").Each(func(_ int, h2 *goquery.Selection) {
-		if strings.Contains(h2.Text(), "Breakdown") || strings.Contains(h2.Text(), "Contents") {
-			// Get all text until next h2
-			siblings := h2.NextAll()
-			siblings.Each(func(_ int, el *goquery.Selection) {
-				if el.Is("h2") {
-					return
-				}
-				breakdownText += " " + el.Text()
-			})
-		}
-	})
-
-	if breakdownText == "" {
-		return
-	}
-
-	// Try to find cards per pack (booster packs)
-	if m := rePackPerBox.FindStringSubmatch(breakdownText); m != nil {
-		if n, err := strconv.ParseUint(m[1], 10, 32); err == nil {
-			s.QuantityPerSet = uint(n)
-		}
-	}
-
-	// Try to find packs per box
-	if m := reBoxPerBox.FindStringSubmatch(breakdownText); m != nil {
-		if n, err := strconv.ParseUint(m[1], 10, 32); err == nil {
-			packs := uint(n)
-			s.QuantityPerBox = s.QuantityPerSet * packs
-		}
-	}
-
-	// Try to find preconstructed deck of N cards
-	if m := rePreconstructedDeck.FindStringSubmatch(breakdownText); m != nil {
-		if n, err := strconv.ParseUint(m[1], 10, 32); err == nil {
-			s.QuantityPerSet = uint(n)
-			if s.QuantityPerBox == 0 {
-				s.QuantityPerBox = uint(n)
-			}
-		}
-	}
-
-	// Try to find "N Decks with X cards"
-	if m := reDeckCount.FindStringSubmatch(breakdownText); m != nil {
-		if decks, err := strconv.ParseUint(m[1], 10, 32); err == nil {
-			if perDeck, err := strconv.ParseUint(m[2], 10, 32); err == nil {
-				s.QuantityPerSet = uint(decks * perDeck)
-				if s.QuantityPerBox == 0 {
-					s.QuantityPerBox = s.QuantityPerSet
-				}
-			}
-		}
-	}
+	// QuantityPerSet y QuantityPerBox se calculan carta por carta en handleSetListPage
+	// El texto del breakdown es inconsistente entre tipos de sets
 }
 
 func (s *SetInfo) parseGalleryLinks(e *colly.HTMLElement) {
@@ -168,18 +118,18 @@ func (s *SetInfo) parseGalleryLinks(e *colly.HTMLElement) {
 }
 
 func (s *SetInfo) parseCardListTabs(e *colly.HTMLElement) {
-	langFromTitle := map[string]items.LangCode{
-		"English":            items.EN,
-		"French":             items.FR,
-		"German":             items.DE,
-		"Italian":            items.IT,
-		"Portuguese":         items.PT,
-		"Spanish":            items.SP,
-		"Japanese":           items.JP,
-		"Asian-English":      items.AE,
-		"Korean":             items.KR,
-		"Simplified Chinese": items.SC,
-		"North American English": items.EN,
+	langFromTitle := map[string]products.LangCode{
+		"English":              products.EN,
+		"French":               products.FR,
+		"German":               products.DE,
+		"Italian":              products.IT,
+		"Portuguese":           products.PT,
+		"Spanish":              products.SP,
+		"Japanese":             products.JP,
+		"Asian-English":        products.AE,
+		"Korean":               products.KR,
+		"Simplified Chinese":   products.SC,
+		"North American English": products.EN,
 	}
 
 	e.DOM.Find("div.tabbertab").Each(func(_ int, tab *goquery.Selection) {
@@ -189,17 +139,25 @@ func (s *SetInfo) parseCardListTabs(e *colly.HTMLElement) {
 			return
 		}
 
-		pageName := tab.Find("div[data-page]").AttrOr("data-page", "")
-		if pageName == "" {
-			pageName = tab.Find(".set-list-tab").AttrOr("data-page", "")
+		// Check if it is an AJAX tab that doesn't have the table loaded
+		ajaxDiv := tab.Find("div.set-list-ajax-tab")
+		if ajaxDiv.Length() > 0 && tab.Find("table.wikitable.sortable.card-list.set-list__main").Length() == 0 {
+			page := ajaxDiv.AttrOr("data-page", "")
+			if page != "" {
+				s.AjaxTabs[lang] = page
+			}
+			return
 		}
-		if pageName != "" {
-			s.CardListPages[lang] = pageName
+
+		// Parse card entries directly from the inline tab content
+		entries := parseSetCardListFromSelection(tab, lang)
+		if len(entries) > 0 {
+			s.CardEntries[lang] = entries
 		}
 	})
 }
 
-func parseSetCardList(e *colly.HTMLElement, lang items.LangCode) []SetCardEntry {
+func parseSetCardList(e *colly.HTMLElement, lang products.LangCode) []SetCardEntry {
 	var entries []SetCardEntry
 
 	table := e.DOM.Find("table.wikitable.sortable.card-list.set-list__main").First()
@@ -251,6 +209,12 @@ func parseSetCardList(e *colly.HTMLElement, lang items.LangCode) []SetCardEntry 
 		category := getCell("category")
 		printType := getCell("print")
 
+		// Parse rarities slice
+		var rarities []string
+		if idx, ok := colIndex["rarity"]; ok && idx < tds.Length() {
+			rarities = extractRaritiesFromCell(tds.Eq(idx))
+		}
+
 		quantity := uint(1)
 		if qtyStr := getCell("quantity"); qtyStr != "" {
 			if n, err := strconv.ParseUint(qtyStr, 10, 32); err == nil {
@@ -262,6 +226,7 @@ func parseSetCardList(e *colly.HTMLElement, lang items.LangCode) []SetCardEntry 
 			CardCode: code,
 			CardName: nameText,
 			Rarity:   rarity,
+			Rarities: rarities,
 			Quantity: quantity,
 			Category: category,
 			Print:    printType,
@@ -272,21 +237,33 @@ func parseSetCardList(e *colly.HTMLElement, lang items.LangCode) []SetCardEntry 
 	return entries
 }
 
-func parseSetCardListWithBonuses(e *colly.HTMLElement, lang items.LangCode) []SetCardEntry {
+// parseSetCardListFromSelection extracts card entries from a goquery.Selection
+// (e.g. a tab div or a full page body). It detects bonus sections by looking
+// for preceding <h3> headings containing "bonus".
+func parseSetCardListFromSelection(root *goquery.Selection, lang products.LangCode) []SetCardEntry {
 	var allEntries []SetCardEntry
 
-	// Find all set-list containers
-	e.DOM.Find("div.set-list").Each(func(_ int, setList *goquery.Selection) {
+	root.Find("table.wikitable.sortable.card-list.set-list__main").Each(func(_ int, table *goquery.Selection) {
 		isBonus := false
-		// Check if preceded by Bonus cards heading
-		prev := setList.Prev()
-		if prev.Length() > 0 && prev.Is("h3") && strings.Contains(prev.Text(), "Bonus") {
-			isBonus = true
+
+		// Find the closest preceding h3 of either the table itself or its parent container (like div.set-list)
+		parent := table.Parent()
+
+		// Helper to check if a selection is preceded by an h2, h3 or h4 containing "bonus"
+		checkPrecedingH3 := func(sel *goquery.Selection) bool {
+			for prev := sel.Prev(); prev.Length() > 0; prev = prev.Prev() {
+				if prev.Is("h2") || prev.Is("h3") || prev.Is("h4") {
+					headingText := strings.ToLower(prev.Text())
+					return strings.Contains(headingText, "bonus")
+				}
+			}
+			return false
 		}
 
-		table := setList.Find("table.wikitable.sortable.card-list.set-list__main")
-		if table.Length() == 0 {
-			return
+		if checkPrecedingH3(table) {
+			isBonus = true
+		} else if parent.Length() > 0 && checkPrecedingH3(parent) {
+			isBonus = true
 		}
 
 		entries := parseSetCardListTable(table, lang, isBonus)
@@ -296,7 +273,12 @@ func parseSetCardListWithBonuses(e *colly.HTMLElement, lang items.LangCode) []Se
 	return allEntries
 }
 
-func parseSetCardListTable(table *goquery.Selection, lang items.LangCode, isBonus bool) []SetCardEntry {
+// parseSetCardListWithBonuses wraps parseSetCardListFromSelection for colly.HTMLElement.
+func parseSetCardListWithBonuses(e *colly.HTMLElement, lang products.LangCode) []SetCardEntry {
+	return parseSetCardListFromSelection(e.DOM, lang)
+}
+
+func parseSetCardListTable(table *goquery.Selection, lang products.LangCode, isBonus bool) []SetCardEntry {
 	var entries []SetCardEntry
 
 	colIndex := map[string]int{}
@@ -344,8 +326,16 @@ func parseSetCardListTable(table *goquery.Selection, lang items.LangCode, isBonu
 		category := getCell("category")
 		printType := getCell("print")
 
+		// Parse rarities slice
+		var rarities []string
+		if idx, ok := colIndex["rarity"]; ok && idx < tds.Length() {
+			rarities = extractRaritiesFromCell(tds.Eq(idx))
+		}
+
 		quantity := uint(1)
-		if qtyStr := getCell("quantity"); qtyStr != "" {
+		if isBonus {
+			quantity = 0
+		} else if qtyStr := getCell("quantity"); qtyStr != "" {
 			if n, err := strconv.ParseUint(qtyStr, 10, 32); err == nil {
 				quantity = uint(n)
 			}
@@ -355,6 +345,7 @@ func parseSetCardListTable(table *goquery.Selection, lang items.LangCode, isBonu
 			CardCode: code,
 			CardName: nameText,
 			Rarity:   rarity,
+			Rarities: rarities,
 			Quantity: quantity,
 			Category: category,
 			Print:    printType,
@@ -366,31 +357,31 @@ func parseSetCardListTable(table *goquery.Selection, lang items.LangCode, isBonu
 	return entries
 }
 
-func langFromInfoboxLabel(label string) items.LangCode {
+func langFromInfoboxLabel(label string) products.LangCode {
 	switch label {
 	case "English":
-		return items.EN
+		return products.EN
 	case "French":
-		return items.FR
+		return products.FR
 	case "German":
-		return items.DE
+		return products.DE
 	case "Italian":
-		return items.IT
+		return products.IT
 	case "Portuguese":
-		return items.PT
+		return products.PT
 	case "Spanish":
-		return items.SP
+		return products.SP
 	case "Japanese":
-		return items.JP
+		return products.JP
 	case "Korean":
-		return items.KR
+		return products.KR
 	case "Simplified Chinese":
-		return items.SC
+		return products.SC
 	}
 	return ""
 }
 
-func parsePrefix(text string) (items.LangCode, string) {
+func parsePrefix(text string) (products.LangCode, string) {
 	// Format: "SR14-EN (en)" or "CH01-FR (fr)"
 	text = strings.TrimSpace(text)
 
@@ -407,26 +398,26 @@ func parsePrefix(text string) (items.LangCode, string) {
 	return langCode, prefix
 }
 
-func langCodeFromISO(iso string) items.LangCode {
+func langCodeFromISO(iso string) products.LangCode {
 	switch iso {
 	case "en":
-		return items.EN
+		return products.EN
 	case "fr":
-		return items.FR
+		return products.FR
 	case "de":
-		return items.DE
+		return products.DE
 	case "it":
-		return items.IT
+		return products.IT
 	case "pt":
-		return items.PT
+		return products.PT
 	case "sp":
-		return items.SP
+		return products.SP
 	case "jp":
-		return items.JP
+		return products.JP
 	case "kr":
-		return items.KR
+		return products.KR
 	case "sc":
-		return items.SC
+		return products.SC
 	}
 	return ""
 }
@@ -444,27 +435,52 @@ func extractNumber(text string) uint {
 }
 
 func setCardsURL(baseURL, pageName string) string {
-	return fmt.Sprintf("%s/wiki/%s", baseURL, strings.ReplaceAll(pageName, " ", "_"))
+	formatted := strings.ReplaceAll(pageName, " ", "_")
+	return fmt.Sprintf("%s/wiki/%s", baseURL, url.PathEscape(formatted))
 }
 
-func convertSetToItems(set *SetInfo, cardEntries map[items.LangCode][]SetCardEntry) []items.Item {
-	var result []items.Item
+func setInfoToProducts(sets map[string]*SetInfo) []products.Product {
+	var result []products.Product
+
+	for _, set := range sets {
+		for lang, name := range set.Names {
+			item := products.Product{
+				Type:          products.ProductTypeSet,
+				ExternalID:    set.ExternalID,
+				SetExternalID: set.ExternalID,
+				TCG:           products.YGO,
+				Lang:          lang,
+				Name:          name,
+				SetName:       name,
+				SetCode:       set.Prefixes[lang],
+				SetType:       set.SetType,
+				SetImage:      set.SetImage,
+			}
+			result = append(result, item)
+		}
+	}
+
+	return result
+}
+
+func convertSetToProducts(set *SetInfo, cardEntries map[products.LangCode][]SetCardEntry) []products.Product {
+	var result []products.Product
 
 	for lang, cards := range cardEntries {
 		for _, card := range cards {
 			name := set.Names[lang]
 			if name == "" {
-				name = set.Names[items.EN]
+				name = set.Names[products.EN]
 			}
 			if name == "" {
 				name = set.ExternalID
 			}
 
-			item := items.Item{
-				Type:           items.ItemTypeSet,
+			item := products.Product{
+				Type:           products.ProductTypeSet,
 				ExternalID:     set.ExternalID,
 				SetExternalID:  set.ExternalID,
-				TCG:            items.YGO,
+				TCG:            products.YGO,
 				Lang:           lang,
 				Name:           name,
 				SetName:        name,
@@ -472,7 +488,6 @@ func convertSetToItems(set *SetInfo, cardEntries map[items.LangCode][]SetCardEnt
 				CardTypes:      card.Category,
 				SetType:        set.SetType,
 				QuantityPerSet: card.Quantity,
-				QuantityPerBox: set.QuantityPerBox,
 			}
 
 			if set.SetImage != "" {
@@ -484,4 +499,45 @@ func convertSetToItems(set *SetInfo, cardEntries map[items.LangCode][]SetCardEnt
 	}
 
 	return result
+}
+
+func extractRaritiesFromCell(cell *goquery.Selection) []string {
+	var rarities []string
+
+	// Try finding <a> links first
+	cell.Find("a").Each(func(_ int, a *goquery.Selection) {
+		if r := strings.TrimSpace(a.Text()); r != "" {
+			rarities = append(rarities, r)
+		}
+	})
+
+	if len(rarities) > 0 {
+		return rarities
+	}
+
+	// Fallback: if no <a> tags, get the raw HTML/text and split by <br> tags or newlines
+	h, err := cell.Html()
+	if err == nil {
+		// Replace various <br> forms with a newline
+		brRe := regexp.MustCompile(`(?i)<br\s*/?>`)
+		h = brRe.ReplaceAllString(h, "\n")
+		// Parse back into a temporary document fragment to get clean text
+		doc, err := goquery.NewDocumentFromReader(strings.NewReader(h))
+		if err == nil {
+			text := doc.Text()
+			for _, line := range strings.Split(text, "\n") {
+				if r := strings.TrimSpace(line); r != "" {
+					rarities = append(rarities, r)
+				}
+			}
+		}
+	}
+
+	if len(rarities) == 0 {
+		if r := strings.TrimSpace(cell.Text()); r != "" {
+			rarities = append(rarities, r)
+		}
+	}
+
+	return rarities
 }

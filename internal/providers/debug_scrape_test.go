@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/operaodev/cardex/internal/items"
+	"github.com/operaodev/cardex/internal/products"
 )
 
 // TestParseCTSTables_RealStructure tests with the actual HTML structure
@@ -129,7 +129,7 @@ func TestParseCTSTables_RealStructure(t *testing.T) {
 	ygoProv.ygoproBaseUrl = server.URL
 	ygoProv.yugipediaBaseUrl = server.URL
 
-	itemsList, err := ygoProv.FetchCardsByName("Dark Magician")
+	itemsList, err := ygoProv.FetchItemsByName("Dark Magician")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestParseCTSTables_RealStructure(t *testing.T) {
 	// Verify JP Vol.1 with empty code is captured (Bug #3 fix)
 	var jpEmptyCode bool
 	for _, item := range itemsList {
-		if item.Lang == items.JP && item.Code == "" {
+		if item.Lang == products.JP && item.Code == "" {
 			jpEmptyCode = true
 		}
 	}
@@ -156,9 +156,9 @@ func TestParseCTSTables_RealStructure(t *testing.T) {
 	}
 
 	// Verify KR uses EN fallback name (Bug #1 fix)
-	var krItem items.Item
+	var krItem products.Product
 	for _, item := range itemsList {
-		if item.Lang == items.KR {
+		if item.Lang == products.KR {
 			krItem = item
 		}
 	}
@@ -169,7 +169,7 @@ func TestParseCTSTables_RealStructure(t *testing.T) {
 	// Verify NA regional table was captured (Bug #2 fix)
 	var naFound bool
 	for _, item := range itemsList {
-		if item.Code == "LOB-005" && item.Lang == items.EN {
+		if item.Code == "LOB-005" && item.Lang == products.EN {
 			naFound = true
 		}
 	}
@@ -232,7 +232,7 @@ func TestScrapeCards_Disambiguation(t *testing.T) {
 	ygoProv.ygoproBaseUrl = server.URL
 	ygoProv.yugipediaBaseUrl = server.URL
 
-	itemsList, err := ygoProv.FetchCardsByName("Purrely")
+	itemsList, err := ygoProv.FetchItemsByName("Purrely")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestScrapeCards_GalleryImages(t *testing.T) {
 	ygoProv.ygoproBaseUrl = server.URL
 	ygoProv.yugipediaBaseUrl = server.URL
 
-	itemsList, err := ygoProv.FetchCardsByName("Danger!? Jackalope?")
+	itemsList, err := ygoProv.FetchItemsByName("Danger!? Jackalope?")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -396,9 +396,9 @@ func TestScrapeCards_GalleryImages(t *testing.T) {
 	}
 
 	// Find EN item
-	var enItem items.Item
+	var enItem products.Product
 	for _, item := range itemsList {
-		if item.Lang == items.EN {
+		if item.Lang == products.EN {
 			enItem = item
 			break
 		}
@@ -425,9 +425,9 @@ func TestScrapeCards_GalleryImages(t *testing.T) {
 	}
 
 	// Find SP item
-	var spItem items.Item
+	var spItem products.Product
 	for _, item := range itemsList {
-		if item.Lang == items.SP {
+		if item.Lang == products.SP {
 			spItem = item
 			break
 		}
@@ -568,7 +568,7 @@ func TestScrapeCards_DangerJackalope(t *testing.T) {
 	ygoProv.ygoproBaseUrl = server.URL
 	ygoProv.yugipediaBaseUrl = server.URL
 
-	itemsList, err := ygoProv.FetchCardsByName("Danger!? Jackalope?")
+	itemsList, err := ygoProv.FetchItemsByName("Danger!? Jackalope?")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -587,9 +587,9 @@ func TestScrapeCards_DangerJackalope(t *testing.T) {
 		t.Errorf("expected 9 items, got %d", len(itemsList))
 	}
 
-	var spItem items.Item
+	var spItem products.Product
 	for _, item := range itemsList {
-		if item.Lang == items.SP {
+		if item.Lang == products.SP {
 			spItem = item
 			break
 		}
@@ -601,9 +601,9 @@ func TestScrapeCards_DangerJackalope(t *testing.T) {
 		t.Errorf("SP set name should be 'Horizonte Cibernético', got %q", spItem.SetName)
 	}
 
-	var jpItem items.Item
+	var jpItem products.Product
 	for _, item := range itemsList {
-		if item.Lang == items.JP {
+		if item.Lang == products.JP {
 			jpItem = item
 			break
 		}
@@ -614,7 +614,7 @@ func TestScrapeCards_DangerJackalope(t *testing.T) {
 
 	var scCount int
 	for _, item := range itemsList {
-		if item.Lang == items.SC {
+		if item.Lang == products.SC {
 			scCount++
 		}
 	}
@@ -624,7 +624,7 @@ func TestScrapeCards_DangerJackalope(t *testing.T) {
 
 	var enRARarity bool
 	for _, item := range itemsList {
-		if item.Lang == items.EN && item.Code == "RA01-EN013" && item.Rarity == "Secret Rare" {
+		if item.Lang == products.EN && item.Code == "RA01-EN013" && item.Rarity == "Secret Rare" {
 			enRARarity = true
 		}
 	}

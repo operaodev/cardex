@@ -1,15 +1,17 @@
 package providers
 
 import (
+	"html"
+	"net/url"
 	"regexp"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/gocolly/colly"
-	"github.com/operaodev/cardex/internal/items"
+	"github.com/operaodev/cardex/internal/products"
 )
 
-type translations map[items.LangCode]string
+type translations map[products.LangCode]string
 
 func serieCode(code string) string {
 	parts := strings.Split(code, "-")
@@ -101,17 +103,17 @@ func parseCards(e *colly.HTMLElement, card YGOCard) map[string]YGOCard {
 
 // mapPrints builds Item prints from the CTS tables on the page, resolving each
 // print's language against translatedCards (keyed by "ExternalID-Lang").
-func mapPrints(e *colly.HTMLElement, card YGOCard, translatedCards map[string]YGOCard) []items.Item {
+func mapPrints(e *colly.HTMLElement, card YGOCard, translatedCards map[string]YGOCard) []products.Product {
 	printEntries := parseCTSTables(e)
 
-	var result []items.Item
+	var result []products.Product
 	for _, entry := range printEntries {
 		regionCardKey := card.ExternalID + "-" + string(entry.Lang)
 		regionCard, exists := translatedCards[regionCardKey]
 		if !exists {
 			// Fallback: use the EN card data when no translation is available
 			// (e.g., JP/KR/AE/TC names are in the infobox, not in the wikitable).
-			enKey := card.ExternalID + "-" + string(items.EN)
+			enKey := card.ExternalID + "-" + string(products.EN)
 			regionCard, exists = translatedCards[enKey]
 			if !exists {
 				continue
@@ -119,11 +121,11 @@ func mapPrints(e *colly.HTMLElement, card YGOCard, translatedCards map[string]YG
 		}
 
 		for _, rarity := range entry.Rarities {
-			item := items.Item{
-				Type:          items.ItemTypeCard,
+			item := products.Product{
+				Type:          products.ProductTypeCard,
 				ExternalID:    card.ExternalID,
 				SetExternalID: entry.SetExternalID,
-				TCG:           items.YGO,
+				TCG:           products.YGO,
 				Code:          entry.Code,
 				Lang:          entry.Lang,
 				Rarity:        rarity,
@@ -147,29 +149,30 @@ func mapPrints(e *colly.HTMLElement, card YGOCard, translatedCards map[string]YG
 type printEntry struct {
 	SetExternalID string
 	SetName       string
+	SetURL        string // wiki page name extracted from href in set column
 	Code          string
 	Rarities      []string
-	Lang          items.LangCode
+	Lang          products.LangCode
 }
 
 func parseCTSTables(e *colly.HTMLElement) []printEntry {
-	tableToLang := map[string]items.LangCode{
-		"cts--EN": items.EN,
-		"cts--NA": items.EN, // North America → EN
-		"cts--EU": items.EN, // Europe → EN
-		"cts--OC": items.EN, // Oceania → EN
-		"cts--FR": items.FR,
-		"cts--FC": items.FR, // French-Canada → FR
-		"cts--DE": items.DE,
-		"cts--IT": items.IT,
-		"cts--PT": items.PT,
-		"cts--SP": items.SP,
-		"cts--JP": items.JP,
-		"cts--JA": items.JP, // Japan-Asia → JP
-		"cts--AE": items.AE,
-		"cts--KR": items.KR,
-		"cts--TC": items.TC,
-		"cts--SC": items.SC,
+	tableToLang := map[string]products.LangCode{
+		"cts--EN": products.EN,
+		"cts--NA": products.EN, // North America → EN
+		"cts--EU": products.EN, // Europe → EN
+		"cts--OC": products.EN, // Oceania → EN
+		"cts--FR": products.FR,
+		"cts--FC": products.FR, // French-Canada → FR
+		"cts--DE": products.DE,
+		"cts--IT": products.IT,
+		"cts--PT": products.PT,
+		"cts--SP": products.SP,
+		"cts--JP": products.JP,
+		"cts--JA": products.JP, // Japan-Asia → JP
+		"cts--AE": products.AE,
+		"cts--KR": products.KR,
+		"cts--TC": products.TC,
+		"cts--SC": products.SC,
 	}
 
 	var entries []printEntry
@@ -216,6 +219,20 @@ func parseCTSTables(e *colly.HTMLElement) []printEntry {
 				return strings.TrimSpace(tds.Eq(idx).Text())
 			}
 
+			getLink := func(key string) string {
+				idx, ok := colIndex[key]
+				if !ok || idx >= tds.Length() {
+					return ""
+				}
+				cell := tds.Eq(idx)
+				link := cell.Find("a").First()
+				if link.Length() == 0 {
+					return ""
+				}
+				href, _ := link.Attr("href")
+				return href
+			}
+
 			code := get("number")
 			// SetExternalID is always the English set name.
 			setExternalID := get("set")
@@ -224,6 +241,9 @@ func parseCTSTables(e *colly.HTMLElement) []printEntry {
 			if local := get("setlocal"); local != "" {
 				setName = local
 			}
+			// SetURL from the href of the set column link
+			setHref := getLink("set")
+			setURL := wikiPageName(setHref)
 
 			// Rarities may be multiple <a> tags inside a single cell.
 			var rarities []string
@@ -249,6 +269,7 @@ func parseCTSTables(e *colly.HTMLElement) []printEntry {
 			entries = append(entries, printEntry{
 				SetExternalID: setExternalID,
 				SetName:       setName,
+				SetURL:        setURL,
 				Code:          code,
 				Rarities:      rarities,
 				Lang:          lang,
@@ -261,35 +282,35 @@ func parseCTSTables(e *colly.HTMLElement) []printEntry {
 
 // filterLangElement maps a Yugipedia language label to a LangCode and stores
 // the value in the provided map.
-func filterLangElement(key string, value string, m map[items.LangCode]string) {
+func filterLangElement(key string, value string, m map[products.LangCode]string) {
 	switch key {
 	case "English":
-		m[items.EN] = value
+		m[products.EN] = value
 	case "French":
-		m[items.FR] = value
+		m[products.FR] = value
 	case "German":
-		m[items.DE] = value
+		m[products.DE] = value
 	case "Italian":
-		m[items.IT] = value
+		m[products.IT] = value
 	case "Portuguese":
-		m[items.PT] = value
+		m[products.PT] = value
 	case "Spanish":
-		m[items.SP] = value
+		m[products.SP] = value
 	case "Japanese":
-		m[items.JP] = value
+		m[products.JP] = value
 	case "Asian-English":
-		m[items.AE] = value
+		m[products.AE] = value
 	case "Korean":
-		m[items.KR] = value
+		m[products.KR] = value
 	case "Traditional Chinese":
-		m[items.TC] = value
+		m[products.TC] = value
 	case "Simplified Chinese":
-		m[items.SC] = value
+		m[products.SC] = value
 	}
 }
 
 // FilterLangElement is the exported alias kept for backward compatibility.
-func FilterLangElement(key, value string, m map[items.LangCode]string) {
+func FilterLangElement(key, value string, m map[products.LangCode]string) {
 	filterLangElement(key, value, m)
 }
 
@@ -297,7 +318,7 @@ func FilterLangElement(key, value string, m map[items.LangCode]string) {
 type galleryEntry struct {
 	Code          string
 	Set           string // SetExternalID extracted from gallery
-	Lang          items.LangCode
+	Lang          products.LangCode
 	Rarity        string // Full name from title attribute (e.g., "Prismatic Secret Rare")
 	RarityCode    string // Short code from visible text (e.g., "PScR")
 	Edition       string // "1st Edition" or "Unlimited Edition"
@@ -308,23 +329,23 @@ type galleryEntry struct {
 // parseGallery parses a Card Gallery page and returns gallery entries.
 // It excludes proxy images and broken images (no <a class="image">).
 func parseGallery(e *colly.HTMLElement) []galleryEntry {
-	galleryIDToLang := map[string]items.LangCode{
-		"card-gallery--EN": items.EN,
-		"card-gallery--NA": items.EN,
-		"card-gallery--EU": items.EN,
-		"card-gallery--OC": items.EN,
-		"card-gallery--FR": items.FR,
-		"card-gallery--FC": items.FR,
-		"card-gallery--DE": items.DE,
-		"card-gallery--IT": items.IT,
-		"card-gallery--PT": items.PT,
-		"card-gallery--SP": items.SP,
-		"card-gallery--JP": items.JP,
-		"card-gallery--JA": items.JP,
-		"card-gallery--AE": items.AE,
-		"card-gallery--KR": items.KR,
-		"card-gallery--TC": items.TC,
-		"card-gallery--SC": items.SC,
+	galleryIDToLang := map[string]products.LangCode{
+		"card-gallery--EN": products.EN,
+		"card-gallery--NA": products.EN,
+		"card-gallery--EU": products.EN,
+		"card-gallery--OC": products.EN,
+		"card-gallery--FR": products.FR,
+		"card-gallery--FC": products.FR,
+		"card-gallery--DE": products.DE,
+		"card-gallery--IT": products.IT,
+		"card-gallery--PT": products.PT,
+		"card-gallery--SP": products.SP,
+		"card-gallery--JP": products.JP,
+		"card-gallery--JA": products.JP,
+		"card-gallery--AE": products.AE,
+		"card-gallery--KR": products.KR,
+		"card-gallery--TC": products.TC,
+		"card-gallery--SC": products.SC,
 	}
 
 	var entries []galleryEntry
@@ -472,6 +493,9 @@ func wikiPageName(href string) string {
 	name = strings.ReplaceAll(name, "_", " ")
 	name, _, _ = strings.Cut(name, "?")
 	name, _, _ = strings.Cut(name, "#")
+	if decoded, err := url.QueryUnescape(name); err == nil {
+		return decoded
+	}
 	return name
 }
 
@@ -486,6 +510,26 @@ func parseGalleryLink(e *colly.HTMLElement) string {
 		}
 	})
 	return galleryURL
+}
+
+func normalizeProducts(items []products.Product) {
+	for i := range items {
+		items[i].Name = html.UnescapeString(strings.TrimSpace(items[i].Name))
+		items[i].SetName = html.UnescapeString(strings.TrimSpace(items[i].SetName))
+		items[i].SetCode = strings.TrimSpace(items[i].SetCode)
+		items[i].Code = strings.TrimSpace(items[i].Code)
+		items[i].Rarity = html.UnescapeString(strings.TrimSpace(items[i].Rarity))
+		items[i].RarityCode = strings.TrimSpace(items[i].RarityCode)
+		items[i].Edition = html.UnescapeString(strings.TrimSpace(items[i].Edition))
+		items[i].Description = html.UnescapeString(items[i].Description)
+		items[i].CardTypes = strings.TrimSpace(items[i].CardTypes)
+		items[i].Archetype = strings.TrimSpace(items[i].Archetype)
+		items[i].ExternalID = html.UnescapeString(strings.TrimSpace(items[i].ExternalID))
+		items[i].SetExternalID = html.UnescapeString(strings.TrimSpace(items[i].SetExternalID))
+		items[i].SerieCode = strings.TrimSpace(items[i].SerieCode)
+		items[i].SetRegionCode = strings.TrimSpace(items[i].SetRegionCode)
+		items[i].SetType = html.UnescapeString(strings.TrimSpace(items[i].SetType))
+	}
 }
 
 func deriveOriginalURL(thumbnailURL string) string {

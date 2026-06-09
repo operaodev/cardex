@@ -6,10 +6,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/operaodev/cardex/internal/items"
+	"github.com/operaodev/cardex/internal/products"
 )
 
-func TestYGOProvider_FetchCardsByName(t *testing.T) {
+func TestYGOProvider_FetchItemsByName(t *testing.T) {
 	// Set up mock HTTP server
 	mux := http.NewServeMux()
 
@@ -112,8 +112,8 @@ func TestYGOProvider_FetchCardsByName(t *testing.T) {
 	ygoProv.ygoproBaseUrl = server.URL
 	ygoProv.yugipediaBaseUrl = server.URL
 
-	// Call FetchCardsByName
-	itemsList, err := ygoProv.FetchCardsByName("Dark Magician")
+	// Call FetchItemsByName
+	itemsList, err := ygoProv.FetchItemsByName("Dark Magician")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,12 +124,12 @@ func TestYGOProvider_FetchCardsByName(t *testing.T) {
 	}
 
 	// Check fields
-	var enItem, spItem items.Item
+	var enItem, spItem products.Product
 	for _, item := range itemsList {
 		switch item.Lang {
-		case items.EN:
+		case products.EN:
 			enItem = item
-		case items.SP:
+		case products.SP:
 			spItem = item
 		}
 	}

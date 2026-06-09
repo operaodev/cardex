@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
-	"github.com/operaodev/cardex/internal/items"
+	"github.com/operaodev/cardex/internal/products"
 	syncsvc "github.com/operaodev/cardex/internal/sync"
 )
 
@@ -27,7 +27,7 @@ func NewSyncHandler(svc *syncsvc.SyncService) *SyncHandler {
 //
 //	POST /sync/:tcg
 func (h *SyncHandler) TriggerSync(c *gin.Context) {
-	tcg := items.TCG(c.Param("tcg"))
+	tcg := products.TCG(c.Param("tcg"))
 	if tcg == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Debe especificar el TCG (e.g. /sync/ygo)"})
 		return
@@ -62,7 +62,7 @@ func (h *SyncHandler) TriggerSync(c *gin.Context) {
 //
 //	POST /sync/:tcg/by-name
 func (h *SyncHandler) TriggerSyncByName(c *gin.Context) {
-	tcg := items.TCG(c.Param("tcg"))
+	tcg := products.TCG(c.Param("tcg"))
 	if tcg == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Debe especificar el TCG (e.g. /sync/ygo)"})
 		return
