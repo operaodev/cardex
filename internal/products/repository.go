@@ -11,9 +11,11 @@ type Repository interface {
 	Upsert(products []Product) (int, error)
 	GetByID(id uint64) (*Product, error)
 	GetRelatedCards(input RelatedCardsInput) (*RelatedCardsResponse, error)
+	GetCardsBySet(setExternalID string, lang LangCode) ([]Product, error)
 
 	GetRandomNames(count int) ([]string, error)
 	GetSuggestions(input SuggestionInput) ([]SuggestionDTO, error)
+	GetSuggestionsByUser(userID string, input SuggestionInput) ([]SuggestionDTO, error)
 }
 
 type repository struct {
@@ -50,7 +52,9 @@ func (r *repository) Upsert(products []Product) (int, error) {
 				"print_url_large",
 				"set_image",
 				"quantity_per_set",
-				"quantity_per_box",
+				"set_region_code",
+				"set_image_small",
+				"set_image_large",
 				"updated_at",
 			}),
 		}).Create(&batch)
@@ -98,7 +102,7 @@ func (r *repository) GetSuggestions(input SuggestionInput) ([]SuggestionDTO, err
 		COALESCE(
 			NULLIF(print_url_small, ''),
 			images->0->>'image_url_small',
-			set_image,
+			set_image_small,
 			''
 		) AS image
 	`
@@ -133,7 +137,7 @@ func (r *repository) GetSuggestions(input SuggestionInput) ([]SuggestionDTO, err
 			OR external_id ILIKE ?
 		)`, namePattern, otherPattern, otherPattern, otherPattern).
 		Order("wanted DESC, priority ASC").
-		Limit(10).
+		Limit(20).
 		Find(&suggestions).Error
 
 	if err != nil {
@@ -153,7 +157,7 @@ func (r *repository) GetRelatedCards(input RelatedCardsInput) (*RelatedCardsResp
 			COALESCE(
 				NULLIF(print_url_small, ''),
 				images->0->>'image_url_small',
-				set_image, ''
+				set_image_small, ''
 			) AS image
 		`).
 		Where("external_id = ?", input.ExternalID).
@@ -177,6 +181,74 @@ func (r *repository) GetRelatedCards(input RelatedCardsInput) (*RelatedCardsResp
 		SameLangDifferentRarity: same,
 		DifferentLang:           different,
 	}, nil
+}
+
+func (r *repository) GetSuggestionsByUser(userID string, input SuggestionInput) ([]SuggestionDTO, error) {
+	var suggestions []SuggestionDTO
+
+	baseSelect := `
+		p.id,
+		p.external_id,
+		p.set_external_id,
+		p.type,
+		p.tcg,
+		p.name,
+		p.code,
+		p.rarity,
+		p.rarity_code,
+		p.set_name,
+		p.set_code,
+		p.lang,
+		p.edition,
+		p.wanted,
+		COALESCE(
+			NULLIF(p.print_url_small, ''),
+			p.images->0->>'image_url_small',
+			p.set_image_small,
+			''
+		) AS image
+	`
+
+	filterQuery := r.db.Table("products AS p")
+	if input.TCG != "" {
+		filterQuery = filterQuery.Where("p.tcg = ?", input.TCG)
+	}
+	if input.Lang != "" {
+		filterQuery = filterQuery.Where("p.lang = ?", input.Lang)
+	}
+
+	namePattern := "%" + input.Input + "%"
+	otherPattern := input.Input + "%"
+
+	err := filterQuery.
+		Select(baseSelect+`,
+			COALESCE(SUM(s.quantity), 0) AS stock,
+			COALESCE(SUM(w.quantity), 0) AS copies_in_wishlist,
+			CASE
+				WHEN p.name ILIKE ? THEN 1
+				WHEN p.code ILIKE ? THEN 2
+				WHEN p.archetype ILIKE ? THEN 3
+				WHEN p.external_id ILIKE ? THEN 4
+			END AS priority
+		`, namePattern, otherPattern, otherPattern, otherPattern).
+		Joins("LEFT JOIN stocks AS s ON s.product_id = p.id AND s.user_id = ?", userID).
+		Joins("LEFT JOIN wishlists AS w ON w.product_id = p.id AND w.user_id = ?", userID).
+		Where(`(
+			p.name ILIKE ?
+			OR p.code ILIKE ?
+			OR p.archetype ILIKE ?
+			OR p.external_id ILIKE ?
+		)`, namePattern, otherPattern, otherPattern, otherPattern).
+		Group("p.id").
+		Order("p.wanted DESC, priority ASC").
+		Limit(10).
+		Find(&suggestions).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	return suggestions, nil
 }
 
 func (r *repository) GetRandomNames(count int) ([]string, error) {
@@ -210,4 +282,16 @@ func (r *repository) GetRandomNames(count int) ([]string, error) {
 	}
 
 	return values, nil
+}
+
+func (r *repository) GetCardsBySet(setExternalID string, lang LangCode) ([]Product, error) {
+	var cards []Product
+	result := r.db.
+		Where("set_external_id = ? AND lang = ? AND type = ?", setExternalID, lang, ProductTypeCard).
+		Order("serie_code ASC").
+		Find(&cards)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return cards, nil
 }

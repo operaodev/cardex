@@ -12,7 +12,6 @@ import (
 type Server struct {
 	router             *gin.Engine
 	providersHandler   *handler.ProviderHandler
-	cardsHandler       *handler.CardsHandler
 	usersHandler       *handler.UsersHandler
 	syncHandler        *handler.SyncHandler
 	productsHandler    *handler.ProductsHandler
@@ -25,7 +24,6 @@ type Server struct {
 
 func NewServer(
 	providersH *handler.ProviderHandler,
-	cardsH *handler.CardsHandler,
 	usersH *handler.UsersHandler,
 	syncH *handler.SyncHandler,
 	productsH *handler.ProductsHandler,
@@ -55,7 +53,6 @@ func NewServer(
 	s := &Server{
 		router:             router,
 		providersHandler:   providersH,
-		cardsHandler:       cardsH,
 		usersHandler:       usersH,
 		syncHandler:        syncH,
 		productsHandler:    productsH,
@@ -70,19 +67,6 @@ func NewServer(
 }
 
 func (s *Server) setupRoutes() {
-	cardsGroup := s.router.Group("/cards")
-	{
-		// GET /cards?tcg=ygo&lang=sp&page=1&limit=20
-		cardsGroup.GET("", s.cardsHandler.GetCatalog)
-		// GET /cards/1234
-		cardsGroup.GET("/:id", s.cardsHandler.GetByID)
-		// GET /cards/suggestions?tcg=ygo&lang=sp&name=Kuriboh
-		cardsGroup.GET("/suggestions", s.cardsHandler.GetSuggestions)
-
-		// Proveedores externos
-		// GET /cards/search/:provider/:id
-	}
-
 	providersGroup := s.router.Group("/providers")
 	{
 		// GET /providers/:provider/cards
@@ -115,22 +99,29 @@ func (s *Server) setupRoutes() {
 		usersGroup.GET("/me", middleware.AuthMiddleware(s.jwtSecret), s.usersHandler.GetMe)
 	}
 
+	// Middleware de autenticación reutilizado en varias rutas
+	auth := middleware.AuthMiddleware(s.jwtSecret)
+	optionalAuth := middleware.OptionalAuthMiddleware(s.jwtSecret)
+
 	// Rutas de products
 	productsGroup := s.router.Group("/products")
 	{
 		// Las rutas fijas deben ir antes del comodín :id
-		// POST /products/suggestions
-		productsGroup.POST("/suggestions", s.productsHandler.FindSuggestions)
+		// POST /products/suggestions (auth opcional: incluye stock/wishlist si el usuario está logueado)
+		productsGroup.POST("/suggestions", optionalAuth, s.productsHandler.FindSuggestions)
+		// POST /products/suggestions/simple (sin auth; rápido sin JOINs de stock/wishlist)
+		productsGroup.POST("/suggestions/simple", s.productsHandler.FindSuggestionsSimple)
 		// GET /products/random/:count
 		productsGroup.GET("/random/:count", s.productsHandler.GetRandomNames)
 		// POST /products/related
 		productsGroup.POST("/related", s.productsHandler.GetRelatedCards)
+		// POST /products/set
+		productsGroup.POST("/set", s.productsHandler.GetCardsBySet)
 		// GET /products/:id
 		productsGroup.GET("/:id", s.productsHandler.GetByID)
 	}
 
 	stockGroup := s.router.Group("/stock")
-	auth := middleware.AuthMiddleware(s.jwtSecret)
 	ownership := middleware.RequireStockOwnership(s.stockRepo)
 	{
 		// GET /stock/me — stock del usuario autenticado
@@ -143,6 +134,8 @@ func (s *Server) setupRoutes() {
 		stockGroup.GET("/logs/:stock_id", auth, ownership, s.stockHandler.GetLogs)
 		// POST /stock
 		stockGroup.POST("", auth, s.stockHandler.Create)
+		// POST /stock/openbox
+		stockGroup.POST("/openbox", auth, s.stockHandler.OpenBox)
 		// POST /stock/restock
 		stockGroup.POST("/restock", auth, s.stockHandler.Restock)
 		// POST /stock/return
@@ -161,6 +154,12 @@ func (s *Server) setupRoutes() {
 		stockGroup.POST("/adjust", auth, s.stockHandler.Adjust)
 		// POST /stock/rollback
 		stockGroup.POST("/rollback", auth, s.stockHandler.Rollback)
+		// POST /stock/:id/price
+		stockGroup.POST("/:id/price", auth, ownership, s.stockHandler.UpdatePrice)
+		// POST /stock/:id/for-sale
+		stockGroup.POST("/:id/for-sale", auth, ownership, s.stockHandler.SetForSale)
+		// POST /stock/:id/for-trade
+		stockGroup.POST("/:id/for-trade", auth, ownership, s.stockHandler.SetForTrade)
 	}
 
 	// Marketplace analysis

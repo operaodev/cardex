@@ -58,9 +58,50 @@ func (h *ProductsHandler) GetRandomNames(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"names": names})
 }
 
-// FindSuggestions maneja POST /items/suggestions
-// Query params: input, tcg (opcional), lang (opcional)
+// FindSuggestions maneja POST /products/suggestions
+// Si la petición viene de un usuario autenticado, incluye stock y wishlist.
 func (h *ProductsHandler) FindSuggestions(c *gin.Context) {
+	var input products.SuggestionInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": ErrInvalidJSONBody})
+		return
+	}
+
+	if input.Input == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Debe proporcionar el parámetro 'input'"})
+		return
+	}
+
+	userID, exists := c.Get("userID")
+	if exists {
+		results, err := h.service.GetSuggestionsByUser(userID.(string), input)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if results == nil {
+			results = []products.SuggestionDTO{}
+		}
+		c.JSON(http.StatusOK, results)
+		return
+	}
+
+	results, err := h.service.GetSuggestions(input)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if results == nil {
+		results = []products.SuggestionDTO{}
+	}
+
+	c.JSON(http.StatusOK, results)
+}
+
+// FindSuggestionsSimple maneja POST /products/suggestions/simple
+// Versión rápida sin auth ni JOINs a stocks/wishlist.
+func (h *ProductsHandler) FindSuggestionsSimple(c *gin.Context) {
 	var input products.SuggestionInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": ErrInvalidJSONBody})
@@ -100,4 +141,35 @@ func (h *ProductsHandler) GetRelatedCards(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+// GetCardsBySet maneja POST /products/set
+func (h *ProductsHandler) GetCardsBySet(c *gin.Context) {
+	var input products.GetCardsBySetInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cuerpo de la petición inválido"})
+		return
+	}
+
+	if input.SetExternalID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "set_external_id requerido"})
+		return
+	}
+
+	if input.Lang == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "lang requerido"})
+		return
+	}
+
+	cards, err := h.service.GetCardsBySet(input)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if cards == nil {
+		cards = []products.Product{}
+	}
+
+	c.JSON(http.StatusOK, cards)
 }

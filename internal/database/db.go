@@ -5,7 +5,6 @@ import (
 	"log"
 	"os"
 
-	"github.com/operaodev/cardex/internal/cards"
 	"github.com/operaodev/cardex/internal/products"
 	"github.com/operaodev/cardex/internal/stock"
 	"github.com/operaodev/cardex/internal/users"
@@ -41,7 +40,6 @@ func Connect() {
 	// JSONBs, índices compuestos y GIN definidos en los modelos.
 	// El orden importa: users, cards y products deben existir antes de que stock cree sus FK.
 	if err = db.AutoMigrate(
-		&cards.Card{},
 		&products.Product{},
 		&users.User{},
 		&stock.Stock{},

@@ -268,6 +268,107 @@ func (h *StockHandler) GetLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, logs)
 }
 
+// UpdatePrice actualiza el precio y/o descuento de un stock.
+// POST /stock/:id/price
+func (h *StockHandler) UpdatePrice(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "id inválido"})
+		return
+	}
+
+	var input stock.PriceInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cuerpo de la petición inválido"})
+		return
+	}
+
+	input.StockID = id
+
+	s, err := h.service.UpdatePrice(input)
+	if err != nil {
+		h.handleServiceError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, s)
+}
+
+// SetForSale establece el estado de venta de un stock.
+// POST /stock/:id/for-sale
+func (h *StockHandler) SetForSale(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "id inválido"})
+		return
+	}
+
+	var body struct {
+		IsForSale bool `json:"is_for_sale"`
+	}
+
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cuerpo de la petición inválido"})
+		return
+	}
+
+	s, err := h.service.ToggleForSale(id, body.IsForSale)
+	if err != nil {
+		h.handleServiceError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, s)
+}
+
+// SetForTrade establece el estado de intercambio de un stock.
+// POST /stock/:id/for-trade
+func (h *StockHandler) SetForTrade(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "id inválido"})
+		return
+	}
+
+	var body struct {
+		IsForTrade bool `json:"is_for_trade"`
+	}
+
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cuerpo de la petición inválido"})
+		return
+	}
+
+	s, err := h.service.ToggleForTrade(id, body.IsForTrade)
+	if err != nil {
+		h.handleServiceError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, s)
+}
+
+// OpenBox simula la apertura de un set, decrementando su stock y creando/actualizando los stocks de las cartas resultantes.
+// POST /stock/openbox
+func (h *StockHandler) OpenBox(c *gin.Context) {
+	var input stock.OpenBoxInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cuerpo de la petición inválido"})
+		return
+	}
+
+	s, err := h.service.OpenBox(input)
+	if err != nil {
+		h.handleServiceError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, s)
+}
+
 func (h *StockHandler) handleServiceError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, stock.ErrStockNotFound),
@@ -278,7 +379,9 @@ func (h *StockHandler) handleServiceError(c *gin.Context, err error) {
 	case errors.Is(err, stock.ErrInvalidQuantity),
 		errors.Is(err, stock.ErrInvalidLogType),
 		errors.Is(err, stock.ErrRollbackNotAllowed),
-		errors.Is(err, stock.ErrStockAlreadyExists):
+		errors.Is(err, stock.ErrStockAlreadyExists),
+		errors.Is(err, stock.ErrProductNotASet),
+		errors.Is(err, stock.ErrProductNotFromSet):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

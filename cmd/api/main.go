@@ -8,7 +8,6 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/operaodev/cardex/api"
 	"github.com/operaodev/cardex/api/handler"
-	"github.com/operaodev/cardex/internal/cards"
 	custompacks "github.com/operaodev/cardex/internal/custom_packs"
 	"github.com/operaodev/cardex/internal/database"
 	"github.com/operaodev/cardex/internal/mailer"
@@ -30,11 +29,9 @@ func main() {
 	database.Connect()
 
 	// 2. Inicializar Repositorios (Capa de Datos)
-	repo := cards.NewRepository(database.DB)
 	productsRepo := products.NewRepository(database.DB)
 
 	// 3. Inicializar Servicios (Lógica de Negocio)
-	cardsSvc := cards.NewService(repo)
 	productsSvc := products.NewService(productsRepo)
 
 	ygoProv := providers.NewYGOProvider()
@@ -43,7 +40,6 @@ func main() {
 	syncService := syncsvc.NewSyncService(providerSvc, productsRepo)
 
 	// 4. Inicializar Handlers (Capa de Transporte)
-	cardsHandler := handler.NewCardsHandler(cardsSvc)
 	productsHandler := handler.NewProductsHandler(productsSvc)
 	providerHandler := handler.NewProviderHandler(providerSvc)
 	syncHandler := handler.NewSyncHandler(syncService)
@@ -86,7 +82,6 @@ func main() {
 	// 5. Configurar e Iniciar Servidor
 	srv := api.NewServer(
 		providerHandler,
-		cardsHandler,
 		usersHandler,
 		syncHandler,
 		productsHandler,

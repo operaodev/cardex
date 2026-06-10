@@ -8,7 +8,9 @@ type Service interface {
 	GetByID(id uint64) (*Product, error)
 	GetRandomNames(count int) ([]string, error)
 	GetSuggestions(input SuggestionInput) ([]SuggestionDTO, error)
+	GetSuggestionsByUser(userID string, input SuggestionInput) ([]SuggestionDTO, error)
 	GetRelatedCards(input RelatedCardsInput) (*RelatedCardsResponse, error)
+	GetCardsBySet(input GetCardsBySetInput) ([]Product, error)
 }
 
 // service implementa la interfaz Service e inyecta el repositorio.
@@ -59,9 +61,32 @@ func (s *service) GetSuggestions(input SuggestionInput) ([]SuggestionDTO, error)
 	return s.repo.GetSuggestions(input)
 }
 
+func (s *service) GetSuggestionsByUser(userID string, input SuggestionInput) ([]SuggestionDTO, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("userID requerido")
+	}
+	if input.Input == "" {
+		return nil, fmt.Errorf("el término de búsqueda no puede estar vacío")
+	}
+	if len(input.Input) < 2 {
+		return nil, fmt.Errorf("el término de búsqueda debe tener al menos 2 caracteres")
+	}
+	return s.repo.GetSuggestionsByUser(userID, input)
+}
+
 func (s *service) GetRelatedCards(input RelatedCardsInput) (*RelatedCardsResponse, error) {
 	if input.ID == 0 {
 		return nil, fmt.Errorf("el ID no puede estar vacío")
 	}
 	return s.repo.GetRelatedCards(input)
+}
+
+func (s *service) GetCardsBySet(input GetCardsBySetInput) ([]Product, error) {
+	if input.SetExternalID == "" {
+		return nil, fmt.Errorf("set_external_id no puede estar vacío")
+	}
+	if input.Lang == "" {
+		return nil, fmt.Errorf("lang no puede estar vacío")
+	}
+	return s.repo.GetCardsBySet(input.SetExternalID, LangCode(input.Lang))
 }

@@ -14,10 +14,13 @@ type Repository interface {
 	GetByUserID(userID string) ([]Stock, error)
 	UpdateQuantity(id uint64, quantity int) error
 	UpdatePrice(id uint64, price, discountPrice decimal.Decimal) error
+	Update(stock *Stock) error
 
 	CreateLog(log *Log) error
 	FindByLogID(id uint64) (*Log, error)
 	GetLogsByStockID(stockID uint64) ([]Log, error)
+
+	RunInTransaction(fn func(tx Repository) error) error
 }
 
 type repository struct {
@@ -92,6 +95,10 @@ func (r *repository) UpdatePrice(id uint64, price, discountPrice decimal.Decimal
 	return nil
 }
 
+func (r *repository) Update(stock *Stock) error {
+	return r.db.Save(stock).Error
+}
+
 func (r *repository) CreateLog(log *Log) error {
 	return r.db.Create(log).Error
 }
@@ -115,4 +122,10 @@ func (r *repository) GetLogsByStockID(stockID uint64) ([]Log, error) {
 		return nil, result.Error
 	}
 	return logs, nil
+}
+
+func (r *repository) RunInTransaction(fn func(tx Repository) error) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		return fn(&repository{db: tx})
+	})
 }

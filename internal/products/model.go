@@ -71,6 +71,8 @@ type Product struct {
 	SetRegionCode  string `json:"set_region_code,omitempty"`
 	SetType        string `json:"set_type,omitempty"`
 	SetImage       string `json:"set_image,omitempty"`
+	SetImageSmall  string `json:"set_image_small,omitempty"`
+	SetImageLarge  string `json:"set_image_large,omitempty"`
 	QuantityPerBox uint   `json:"quantity_per_box" gorm:"default:0"`
 
 	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`

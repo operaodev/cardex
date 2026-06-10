@@ -65,6 +65,11 @@ func (s *Stock) DiscountPercentage() decimal.Decimal {
 }
 
 func (s *Stock) BeforeUpdate(tx *gorm.DB) error {
+	// Partial update (Model().Where().Update) — modelo sin ID, nada que comparar.
+	if s.ID == 0 {
+		return nil
+	}
+
 	var old Stock
 	if err := tx.First(&old, s.ID).Error; err != nil {
 		return err
@@ -101,7 +106,7 @@ type LogType string
 
 const (
 	// Físicos
-	LogOpenBox    LogType = "open_box"   // apertura de caja
+	LogUnboxing    LogType = "unboxing"   // apertura de caja
 	LogAdd        LogType = "add"        // creación inicial
 	LogRestock    LogType = "restock"    // entrada de stock
 	LogSale       LogType = "sale"       // venta

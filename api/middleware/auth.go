@@ -47,6 +47,36 @@ func AuthMiddleware(secret string) gin.HandlerFunc {
 	}
 }
 
+// OptionalAuthMiddleware intenta validar el token JWT e inyectar los datos
+// del usuario en el contexto de Gin. Si el header Authorization está ausente
+// o el token es inválido, continúa sin rechazar la petición.
+func OptionalAuthMiddleware(secret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.Next()
+			return
+		}
+
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			c.Next()
+			return
+		}
+
+		claims, err := jwt.ValidateToken(parts[1], secret)
+		if err != nil {
+			c.Next()
+			return
+		}
+
+		c.Set(UserIDKey, claims.UserID)
+		c.Set(EmailKey, claims.Email)
+		c.Set(NameKey, claims.Name)
+		c.Next()
+	}
+}
+
 // RequireStockOwnership verifica que el stock solicitado pertenece al usuario autenticado.
 // Debe usarse después de AuthMiddleware.
 func RequireStockOwnership(stockRepo stock.Repository) gin.HandlerFunc {

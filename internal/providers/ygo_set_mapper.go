@@ -452,9 +452,12 @@ func setInfoToProducts(sets map[string]*SetInfo) []products.Product {
 				Lang:          lang,
 				Name:          name,
 				SetName:       name,
-				SetCode:       set.Prefixes[lang],
+				SetRegionCode: set.Prefixes[lang],
+				SetCode:       extractSetCode(set.Prefixes[lang]),
 				SetType:       set.SetType,
 				SetImage:      set.SetImage,
+				SetImageLarge: deriveSetImageLarge(set.SetImage),
+				SetImageSmall: deriveSetImageSmall(set.SetImage),
 			}
 			result = append(result, item)
 		}
@@ -492,6 +495,8 @@ func convertSetToProducts(set *SetInfo, cardEntries map[products.LangCode][]SetC
 
 			if set.SetImage != "" {
 				item.SetImage = set.SetImage
+				item.SetImageLarge = deriveSetImageLarge(set.SetImage)
+				item.SetImageSmall = deriveSetImageSmall(set.SetImage)
 			}
 
 			result = append(result, item)
@@ -540,4 +545,31 @@ func extractRaritiesFromCell(cell *goquery.Selection) []string {
 	}
 
 	return rarities
+}
+
+func extractSetCode(regionCode string) string {
+	if regionCode == "" {
+		return ""
+	}
+	return regexp.MustCompile(`-[A-Z]{2,4}$`).ReplaceAllString(regionCode, "")
+}
+
+func deriveSetImageLarge(setImage string) string {
+	if setImage == "" || !strings.Contains(setImage, "yugipedia.com") {
+		return ""
+	}
+	pngIdx := strings.Index(setImage, ".png")
+	if pngIdx == -1 {
+		return ""
+	}
+	url := setImage[:pngIdx+4]
+	return strings.ReplaceAll(url, "//thumb", "//")
+}
+
+func deriveSetImageSmall(setImage string) string {
+	if setImage == "" || !strings.Contains(setImage, "yugipedia.com") {
+		return ""
+	}
+	re := regexp.MustCompile(`\d+px-`)
+	return re.ReplaceAllString(setImage, "257px-")
 }
