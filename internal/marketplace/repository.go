@@ -8,6 +8,7 @@ import (
 type Repository interface {
 	GetPrices(id uint64) (MarketAnalysis, error)
 	GetOffers(input OffersInput) (OffersPage, error)
+	GetCards(input FilterInput) (ProductResumePage, error)
 }
 
 type repository struct {
@@ -119,6 +120,82 @@ func (r *repository) GetOffers(input OffersInput) (OffersPage, error) {
 	}
 
 	page.Items = offers
+	page.Page = input.Page
+	page.Limit = input.Limit
+	page.TotalPages = int((page.Total + int64(input.Limit) - 1) / int64(input.Limit))
+
+	return page, nil
+}
+
+func (r *repository) GetCards(input FilterInput) (ProductResumePage, error) {
+	var page ProductResumePage
+
+	if input.Limit <= 0 {
+		input.Limit = 20
+	}
+	if input.Limit > 100 {
+		input.Limit = 100
+	}
+	if input.Page <= 0 {
+		input.Page = 1
+	}
+
+	offset := (input.Page - 1) * input.Limit
+
+	stockSubquery := r.db.Table("stocks").
+		Select("product_id, COALESCE(SUM(quantity), 0) AS global_stock, COALESCE(AVG(price), 0) AS average_price").
+		Where("is_for_sale = ?", true).
+		Group("product_id")
+
+	namePattern := "%" + input.Input + "%"
+	otherPattern := input.Input + "%"
+
+	baseQuery := func() *gorm.DB {
+		q := r.db.Table("products AS p").
+			Joins("LEFT JOIN (?) AS st ON st.product_id = p.id", stockSubquery)
+
+		q = q.Where("(p.name ILIKE ? OR p.code ILIKE ? OR p.archetype ILIKE ?)",
+			namePattern, otherPattern, otherPattern)
+
+		if input.ProductType != "" {
+			q = q.Where("p.type = ?", input.ProductType)
+		}
+
+		if len(input.TCGs) > 0 {
+			q = q.Where("p.tcg IN ?", input.TCGs)
+		}
+		if len(input.Langs) > 0 {
+			q = q.Where("p.lang IN ?", input.Langs)
+		}
+
+		return q
+	}
+
+	countQuery := baseQuery()
+	countQuery.Count(&page.Total)
+
+	var items []ProductResume
+	err := baseQuery().
+		Select(`p.id, p.name, COALESCE(p.code, '') AS code, p.set_name,
+			p.rarity, p.rarity_code,
+			COALESCE(st.global_stock, 0) AS global_stock,
+			COALESCE(st.average_price, 0) AS average_price,
+			COALESCE(
+				NULLIF(p.print_url_large, ''),
+				p.images->0->>'image_url',
+				p.set_image_large,
+				''
+			) AS image`).
+		Order("p.wanted DESC").
+		Offset(offset).
+		Limit(input.Limit).
+		Scan(&items).Error
+
+	if err != nil {
+		return page, err
+	}
+
+	page.Items = items
 	page.Page = input.Page
 	page.Limit = input.Limit
 	page.TotalPages = int((page.Total + int64(input.Limit) - 1) / int64(input.Limit))

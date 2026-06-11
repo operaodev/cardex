@@ -94,3 +94,20 @@ func (h *MarketplaceHandler) GetOffers(c *gin.Context) {
 
 	c.JSON(http.StatusOK, page)
 }
+
+// FindCards maneja POST /marketplace/cards
+func (h *MarketplaceHandler) FindCards(c *gin.Context) {
+	var input marketplace.FilterInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Error al interpretar el cuerpo JSON"})
+		return
+	}
+
+	page, err := h.service.GetCards(input)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, page)
+}

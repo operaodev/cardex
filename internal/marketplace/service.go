@@ -5,6 +5,7 @@ import "fmt"
 type Service interface {
 	GetPrices(id uint64) (MarketAnalysis, error)
 	GetOffers(input OffersInput) (OffersPage, error)
+	GetCards(input FilterInput) (ProductResumePage, error)
 }
 
 type service struct {
@@ -27,4 +28,14 @@ func (s *service) GetOffers(input OffersInput) (OffersPage, error) {
 		return OffersPage{}, fmt.Errorf("el ID no puede estar vacío")
 	}
 	return s.repo.GetOffers(input)
+}
+
+func (s *service) GetCards(input FilterInput) (ProductResumePage, error) {
+	// if input.Input == "" {
+	// 	return ProductResumePage{}, fmt.Errorf("el término de búsqueda no puede estar vacío")
+	// }
+	// if len(input.Input) < 2 {
+	// 	return ProductResumePage{}, fmt.Errorf("el término de búsqueda debe tener al menos 2 caracteres")
+	// }
+	return s.repo.GetCards(input)
 }

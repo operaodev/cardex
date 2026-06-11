@@ -162,13 +162,15 @@ func (s *Server) setupRoutes() {
 		stockGroup.POST("/:id/for-trade", auth, ownership, s.stockHandler.SetForTrade)
 	}
 
-	// Marketplace analysis
+	// Marketplace
 	marketplaceGroup := s.router.Group("/marketplace")
 	{
 		// GET /marketplace/analysis/:id
 		marketplaceGroup.GET("/analysis/:id", s.marketplaceHandler.GetPrices)
 		// GET /marketplace/offers/:id
 		marketplaceGroup.GET("/offers/:id", s.marketplaceHandler.GetOffers)
+		// POST /marketplace/cards
+		marketplaceGroup.POST("/cards", s.marketplaceHandler.FindCards)
 	}
 
 	// Wishlist (custom packs)
