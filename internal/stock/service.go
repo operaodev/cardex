@@ -2,6 +2,8 @@ package stock
 
 import (
 	"fmt"
+	"log"
+	"sync"
 
 	"github.com/operaodev/cardex/internal/products"
 )
@@ -258,6 +260,34 @@ func (s *service) OpenBox(input OpenBoxInput) (*Stock, error) {
 		}
 	}
 
+	// Pre-cargamos en paralelo los stocks existentes para cada item del set.
+	// Cada item es independiente (distinto ProductID), así que son lecturas seguras
+	// de paralelizar. Las mutaciones que siguen se hacen dentro de la transacción
+	// de forma secuencial (un *sql.Tx no es thread-safe).
+	type existingResult struct {
+		idx      int
+		existing *Stock
+		err      error
+	}
+	results := make([]existingResult, len(input.Items))
+	var wg sync.WaitGroup
+	for i, item := range input.Items {
+		wg.Add(1)
+		go func(idx int, it OpenBoxItem) {
+			defer wg.Done()
+			existing, err := s.repo.FindByUserAndProductAndCondition(
+				setStock.UserID, it.Product.ID, ConditionMint,
+			)
+			results[idx] = existingResult{idx: idx, existing: existing, err: err}
+		}(i, item)
+	}
+	wg.Wait()
+	for _, r := range results {
+		if r.err != nil {
+			return nil, r.err
+		}
+	}
+
 	var updatedStock *Stock
 	err = s.repo.RunInTransaction(func(tx Repository) error {
 		newSetQty := setStock.Quantity - input.Quantity
@@ -277,11 +307,8 @@ func (s *service) OpenBox(input OpenBoxInput) (*Stock, error) {
 			return err
 		}
 
-		for _, item := range input.Items {
-			existing, err := tx.FindByUserAndProductAndCondition(setStock.UserID, item.Product.ID, ConditionMint)
-			if err != nil {
-				return err
-			}
+		for i, item := range input.Items {
+			existing := results[i].existing
 
 			if existing != nil {
 				prevQty := existing.Quantity
@@ -419,20 +446,22 @@ func (s *service) increaseQuantity(stockID uint64, amount int, logType LogType, 
 	previousStock := stock.Quantity
 	newStock := previousStock + amount
 
+	go func() {
+		logEntry := &Log{
+			StockID:       stock.ID,
+			LogType:       logType,
+			Delta:         amount,
+			PreviousStock: previousStock,
+			NewStock:      newStock,
+			Note:          note,
+		}
+
+		if err := s.repo.CreateLog(logEntry); err != nil {
+			log.Printf("increaseQuantity: error creando log de stock %d: %v", stock.ID, err)
+		}
+	}()
+
 	if err := s.repo.UpdateQuantity(stock.ID, newStock); err != nil {
-		return nil, err
-	}
-
-	log := &Log{
-		StockID:       stock.ID,
-		LogType:       logType,
-		Delta:         amount,
-		PreviousStock: previousStock,
-		NewStock:      newStock,
-		Note:          note,
-	}
-
-	if err := s.repo.CreateLog(log); err != nil {
 		return nil, err
 	}
 
@@ -455,21 +484,23 @@ func (s *service) decreaseQuantity(stockID uint64, amount int, logType LogType, 
 
 	previousStock := stock.Quantity
 	newStock := previousStock - amount
+	
+	go func() {
+		logEntry := &Log{
+			StockID:       stock.ID,
+			LogType:       logType,
+			Delta:         -amount,
+			PreviousStock: previousStock,
+			NewStock:      newStock,
+			Note:          note,
+		}
+
+		if err := s.repo.CreateLog(logEntry); err != nil {
+			log.Printf("decreaseQuantity: error creando log de stock %d: %v", stock.ID, err)
+		}
+	}()
 
 	if err := s.repo.UpdateQuantity(stock.ID, newStock); err != nil {
-		return nil, err
-	}
-
-	log := &Log{
-		StockID:       stock.ID,
-		LogType:       logType,
-		Delta:         -amount,
-		PreviousStock: previousStock,
-		NewStock:      newStock,
-		Note:          note,
-	}
-
-	if err := s.repo.CreateLog(log); err != nil {
 		return nil, err
 	}
 

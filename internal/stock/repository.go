@@ -82,7 +82,8 @@ func (r *repository) GetByUserID(userID string, input FilterInput) (StockPage, e
 	baseQuery := func() *gorm.DB {
 		q := r.db.Table("stocks AS s").
 			Joins("JOIN products AS p ON p.id = s.product_id").
-			Where("s.user_id = ?", userID)
+			Where("s.user_id = ?", userID).
+			Order("s.updated_at DESC")
 
 		if term := strings.TrimSpace(input.Input); term != "" {
 			pattern := "%" + term + "%"
@@ -137,13 +138,13 @@ func (r *repository) GetByUserID(userID string, input FilterInput) (StockPage, e
 
 // filterRow es la proyección plana usada internamente por GetFiltersByUserID.
 type filterRow struct {
-	Type          products.ProductType `gorm:"column:type"`
-	TCG           products.TCG         `gorm:"column:tcg"`
-	Lang          products.LangCode    `gorm:"column:lang"`
-	SetName       string               `gorm:"column:set_name"`
-	Archetype     string               `gorm:"column:archetype"`
-	Rarity        string               `gorm:"column:rarity"`
-	Edition       string               `gorm:"column:edition"`
+	Type      products.ProductType `gorm:"column:type"`
+	TCG       products.TCG         `gorm:"column:tcg"`
+	Lang      products.LangCode    `gorm:"column:lang"`
+	SetName   string               `gorm:"column:set_name"`
+	Archetype string               `gorm:"column:archetype"`
+	Rarity    string               `gorm:"column:rarity"`
+	Edition   string               `gorm:"column:edition"`
 }
 
 func (r *repository) GetFiltersByUserID(userID string, input FilterInput) (FilterOutput, error) {
