@@ -2,7 +2,20 @@
 
 Cardex es una aplicacion de catalogo y busqueda de cartas de Trading Card Games (TCG), diseñada bajo una arquitectura de tabla unica ("Single Table") en PostgreSQL para optimizar el rendimiento y facilitar consultas complejas sin el uso de JOINs relacionales. La aplicacion esta construida en Go y ofrece tanto una API RESTful como herramientas de linea de comandos para la sincronizacion masiva de datos.
 
+## Integrantes
+
+| N° | Integrantes | Participación |
+|:--:|-------------|:-------------:|
+| 1 | Balbin Casas, Alejandro Cesar | 100% |
+| 2 | Maguiño Soto, Oswaldo | 100% |
+| 3 | Quispilloclla Casique, Sergio | 100% |
+| 4 | Ruiz Marquezado, Giancarlo | 100% |
+| 5 | Zarate Davila, Issac | 100% |
+
+**Video de presentación:** [https://youtu.be/xsZ6j4JKi5Q](https://youtu.be/xsZ6j4JKi5Q)
+
 ## Arquitectura
+
 
 El sistema esta dividido en varios componentes principales dentro del directorio `internal`:
 
@@ -82,6 +95,36 @@ go mod tidy
 # Iniciar el servidor API
 go run cmd/api/main.go
 ```
+
+
+## Topologías de Red
+La API (Backend en Go) se despliega como un servicio independiente. 
+- **Despliegue Local:** Contenedor Docker para PostgreSQL expuesto en el puerto 5432 y servicio Go corriendo en el host o en otro contenedor.
+- **Producción:** Se recomienda un modelo donde un balanceador de carga (Load Balancer) o Reverse Proxy reciba el tráfico HTTP/HTTPS público, sirva los endpoints y se comunique con instancias internas de Cardex aisladas de la red pública. La base de datos (PostgreSQL) debe residir en una subnet privada aislada de la red pública.
+
+## Políticas de Seguridad
+- **Protección de Endpoints:** Endpoints administrativos (como /sync/:tcg) deben restringirse para prevenir abuso y ataques de denegación de servicio en las sincronizaciones masivas.
+- **Conexiones a BD:** Uso de conexiones seguras hacia PostgreSQL. Solo la API de backend tiene alcance y credenciales de acceso.
+- **Validación de Datos:** Sanitización estricta de variables en query strings y rutas dentro de gin-gonic.
+
+## Diccionarios de Datos (Resumen Single-Table)
+El modelo de dominio (ej. Card) define una tabla consolidada en PostgreSQL. Campos principales:
+- unique_id (String - Primary Key): Clave compuesta generada.
+- 
+ame (String): Nombre oficial.
+- 	cg (String): Identificador del juego (ej: ygo).
+- lang (String): Idioma.
+- 	ype, rchetype, subtype (String): Atributos.
+- 
+arity (String): Rareza de la carta.
+- set_code (String): Código de expansión.
+
+## Manuales de Operación
+La operativa principal consiste en el mantenimiento del catálogo de cartas:
+1. Para actualizar la base de datos con información externa, ejecutar la herramienta CLI de sincronización:
+   \\ash
+   go run cmd/sync/main.go --tcg=ygo --env=.env
+   \2. Monitorizar los logs del proceso de sincronización para validar su culminación y detectar fallos de red hacia proveedores (Yugipedia, YGOPRODeck).
 
 ## Pruebas (Testing)
 
